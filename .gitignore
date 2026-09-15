@@ -87,8 +87,8 @@ dmypy.json
 # MkDocs documentation
 site/
 
-# UV
-uv.lock
+# UV cache (the reviewed uv.lock file itself is committed)
+.uv-cache/
 
 # Coverage directory
 .coverage/

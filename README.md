@@ -5,8 +5,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/vstorm-co/pydantic-ai-rlm">GitHub</a> •
-  <a href="https://pypi.org/project/pydantic-ai-rlm/">PyPI</a> •
+  <a href="https://github.com/vstorm-co/pydantic-ai-rlm">Upstream repository</a> •
+  <a href="https://pypi.org/project/pydantic-ai-rlm/">Upstream PyPI package</a> •
   <a href="https://github.com/vstorm-co/pydantic-ai-rlm#examples">Examples</a>
 </p>
 
@@ -31,6 +31,11 @@
 
 ---
 
+> **Local Monty fork:** This branch replaces the original in-process CPython
+> executor with a dedicated Pydantic Monty worker for every agent run. The
+> upstream RLM instructions are byte-for-byte unchanged. See [SECURITY.md](SECURITY.md)
+> before operating on regulated or confidential data.
+
 ## What is RLM?
 
 **RLM (Recursive Language Model)** is a pattern for handling contexts that exceed a model's context window, introduced by **Alex L. Zhang, Tim Kraska, and Omar Khattab** in their paper [Recursive Language Models](https://arxiv.org/abs/2512.24601). Instead of trying to fit everything into one prompt, the LLM writes Python code to programmatically explore and analyze the data.
@@ -44,14 +49,14 @@ This library is an implementation inspired by the [original minimal implementati
 ## Get Started in 60 Seconds
 
 ```bash
-pip install pydantic-ai-rlm
+python -m pip install .
 ```
 
 ```python
 from pydantic_ai_rlm import run_rlm_analysis
 
 answer = await run_rlm_analysis(
-    context=massive_document,  # Can be millions of characters
+    context=massive_document,  # bounded by RLMConfig.max_context_bytes
     query="Find the magic number hidden in the text",
     model="openai:gpt-5",
     sub_model="openai:gpt-5-mini",
@@ -145,7 +150,7 @@ agent = Agent("openai:gpt-5", toolsets=[toolset])
 Find specific information in massive text:
 
 ```python
-from pydantic_ai_rlm import run_rlm_analysis
+from pydantic_ai_rlm import RLMConfig, run_rlm_analysis
 
 # 1 million lines of text with a hidden number
 massive_text = generate_haystack(num_lines=1_000_000)
@@ -155,6 +160,10 @@ answer = await run_rlm_analysis(
     query="Find the magic number hidden in the text",
     model="openai:gpt-5",
     sub_model="openai:gpt-5-mini",
+    config=RLMConfig(
+        max_context_bytes=128 * 1024 * 1024,
+        max_memory_bytes=1024 * 1024 * 1024,
+    ),
 )
 ```
 
@@ -270,7 +279,10 @@ Enable verbose logging to see what the agent is doing in real-time.
 from pydantic_ai_rlm import configure_logging, run_rlm_analysis
 
 # Enable logging (uses rich if installed, falls back to plain text)
-configure_logging(enabled=True)
+configure_logging(enabled=True)  # metadata only; content stays redacted
+
+# Explicitly enabling this can disclose prompts, code and model output to logs:
+# configure_logging(enabled=True, include_content=True)
 
 # Now you'll see code executions and outputs in the terminal
 answer = await run_rlm_analysis(
@@ -286,7 +298,7 @@ configure_logging(enabled=False)
 Install with rich logging support for syntax highlighting and styled output:
 
 ```bash
-pip install pydantic-ai-rlm[logging]
+python -m pip install ".[logging]"
 ```
 
 Or install rich separately:
@@ -295,7 +307,8 @@ Or install rich separately:
 pip install rich
 ```
 
-When enabled, you'll see:
+With the secure default (`include_content=False`), you'll see sizes, status and
+timings without content. With content logging explicitly enabled, you'll see:
 
 - Syntax-highlighted code being executed (with rich)
 - Execution results with status indicators (SUCCESS/ERROR)
@@ -316,11 +329,19 @@ The sandboxed REPL provides:
 | `context` variable | Your data loaded and ready to use |
 | `llm_query(prompt)` | Delegate to sub-model (if configured) |
 | Safe built-ins | `print`, `len`, `range`, etc. |
-| Common imports | `json`, `re`, `collections`, etc. |
+| Supported imports | Monty's capability-free Python subset |
 | Persistent state | Variables persist across executions |
 | Output capture | stdout/stderr returned to agent |
 
-**Blocked for security:** `eval`, `exec`, `compile`, `open` (outside temp dir)
+Each run gets a newly spawned worker that is destroyed at run completion. The
+sandbox has no filesystem mounts, environment variables, sockets, subprocesses,
+or ambient host objects. `llm_query()` is the only optional egress path and is
+absent unless a sub-model is explicitly configured.
+
+Resource limits are finite by default. Production deployments should pin the
+Monty executable with `RLMConfig(monty_binary_path=..., monty_binary_sha256=...)`
+and lock all Python dependencies. Full controls and residual risks are documented
+in [SECURITY.md](SECURITY.md).
 
 ---
 
@@ -336,9 +357,8 @@ The sandboxed REPL provides:
 ## Contributing
 
 ```bash
-git clone https://github.com/vstorm-co/pydantic-ai-rlm.git
-cd pydantic-ai-rlm
-pip install -e ".[dev]"
+git switch codex/monty-sandbox
+python -m pip install -e ".[dev]"
 pytest
 ```
 

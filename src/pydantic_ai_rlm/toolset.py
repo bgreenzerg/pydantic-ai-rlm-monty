@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
+from typing import Any
 
 from pydantic_ai import RunContext
 from pydantic_ai.toolsets import FunctionToolset
 
 from .dependencies import RLMConfig, RLMDependencies
 from .logging import get_logger
-from .repl import REPLEnvironment, REPLResult
+from .repl import AsyncREPLEnvironment, REPLResult
 from .utils import format_repl_result
 
 EXECUTE_CODE_DESCRIPTION = """
@@ -48,10 +50,6 @@ if isinstance(context, dict):
         print(f"{key}: {type(value)}")
 ```
 """
-
-
-# Global registry to track REPL environments for cleanup
-_repl_registry: dict[int, REPLEnvironment] = {}
 
 
 def create_rlm_toolset(
@@ -110,59 +108,104 @@ def create_rlm_toolset(
         # Tool will be named 'rlm_execute_code'
         ```
     """
-    toolset: FunctionToolset[RLMDependencies] = FunctionToolset(id=toolset_id)
+    if code_timeout <= 0 or code_timeout > 300:
+        raise ValueError("code_timeout must be greater than zero and at most 300 seconds")
+    return MontyRLMToolset(
+        code_timeout=code_timeout,
+        sub_model=sub_model,
+        toolset_id=toolset_id,
+    )
 
-    def _get_or_create_repl(ctx: RunContext[RLMDependencies]) -> REPLEnvironment:
-        """Get or create REPL environment for this run context."""
-        deps_id = id(ctx.deps)
 
-        if deps_id not in _repl_registry:
-            config = ctx.deps.config or RLMConfig()
-            # Override sub_model from factory if set and not already in config
-            if sub_model and not config.sub_model:
-                config = RLMConfig(
-                    sub_model=sub_model,
-                )
-            _repl_registry[deps_id] = REPLEnvironment(
-                context=ctx.deps.context,
-                config=config,
-            )
+class MontyRLMToolset(FunctionToolset[RLMDependencies]):
+    """A stateless toolset factory that creates one sandbox per agent run."""
 
-        return _repl_registry[deps_id]
+    def __init__(
+        self,
+        *,
+        code_timeout: float,
+        sub_model: str | None,
+        toolset_id: str | None,
+    ) -> None:
+        super().__init__(id=toolset_id)
+        self._code_timeout = code_timeout
+        self._sub_model = sub_model
 
-    @toolset.tool(description=EXECUTE_CODE_DESCRIPTION)
-    async def execute_code(ctx: RunContext[RLMDependencies], code: str) -> str:
-        repl_env = _get_or_create_repl(ctx)
-        logger = get_logger()
+    async def for_run(self, ctx: RunContext[RLMDependencies]) -> FunctionToolset[RLMDependencies]:
+        config = replace(ctx.deps.config, code_timeout=self._code_timeout)
+        if self._sub_model and not config.sub_model:
+            config = replace(config, sub_model=self._sub_model)
+        return _RunMontyRLMToolset(
+            context=ctx.deps.context,
+            config=config,
+            toolset_id=self.id,
+        )
 
-        # Log the code being executed
-        logger.log_code_execution(code)
 
+class _RunMontyRLMToolset(FunctionToolset[RLMDependencies]):
+    """Per-run toolset owning a single isolated Monty worker session."""
+
+    def __init__(self, *, context: Any, config: RLMConfig, toolset_id: str | None) -> None:
+        super().__init__(id=toolset_id)
+        self._context = context
+        self._config = config
+        self._repl: AsyncREPLEnvironment | None = None
+
+        @self.tool(description=EXECUTE_CODE_DESCRIPTION, sequential=True)
+        async def execute_code(ctx: RunContext[RLMDependencies], code: str) -> str:
+            del ctx
+            return await self._execute_code(code)
+
+    async def __aenter__(self) -> _RunMontyRLMToolset:
+        if self._repl is not None:
+            raise RuntimeError("sandbox session is already active")
+        repl = AsyncREPLEnvironment(self._context, self._config)
         try:
-            loop = asyncio.get_running_loop()
-            result: REPLResult = await asyncio.wait_for(
-                loop.run_in_executor(None, repl_env.execute, code),
-                timeout=code_timeout,
-            )
+            await repl.open()
+        except BaseException:
+            # Do not retain tenant data when startup fails or is cancelled.
+            self._context = None
+            await repl.close()
+            raise
+        self._repl = repl
+        # The validated context now belongs only to the environment/session.
+        self._context = None
+        return self
 
-            # Log the result
-            logger.log_result(result)
+    async def __aexit__(self, *args: object) -> bool | None:
+        repl, self._repl = self._repl, None
+        if repl is not None:
+            await repl.close()
+        self._context = None
+        return None
 
-            return format_repl_result(result)
-
+    async def _execute_code(self, code: str) -> str:
+        repl = self._repl
+        if repl is None:
+            return "Error executing code: sandbox session is not active"
+        logger = get_logger()
+        logger.log_code_execution(code)
+        try:
+            async with asyncio.timeout(self._config.code_timeout):
+                result: REPLResult = await repl.execute(code)
         except TimeoutError:
-            return f"Error: Code execution timed out after {code_timeout} seconds."
-        except Exception as e:
-            return f"Error executing code: {e!s}"
+            await repl.close()
+            self._repl = None
+            return f"Error: Code execution timed out after {self._config.code_timeout} seconds."
+        except asyncio.CancelledError:
+            try:
+                await repl.close()
+            finally:
+                self._repl = None
+            raise
+        except Exception as exc:
+            await repl.close()
+            self._repl = None
+            return f"Error executing code: {type(exc).__name__}: {exc}"
 
-    return toolset
+        logger.log_result(result)
+        return format_repl_result(result)
 
 
 def cleanup_repl_environments() -> None:
-    """Clean up all REPL environments.
-
-    Call this when you're done with all agent runs to release resources.
-    """
-    for repl_env in _repl_registry.values():
-        repl_env.cleanup()
-    _repl_registry.clear()
+    """Compatibility no-op; environments now clean up per agent run."""

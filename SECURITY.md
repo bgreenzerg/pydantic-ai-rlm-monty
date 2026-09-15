@@ -1,0 +1,111 @@
+# Security model
+
+This fork treats model-generated Python as hostile. It replaces the upstream
+in-process CPython `exec`/`eval` REPL with Pydantic Monty 0.0.22 and creates a
+fresh native worker process and interpreter session for every Pydantic AI run.
+The original RLM prompts remain byte-for-byte unchanged.
+
+## Trust boundaries
+
+- The application, this package, its dependency environment and the selected
+  Monty binary are trusted deployment components.
+- The main model, generated Python, input context and sub-model output are
+  untrusted data.
+- Model providers are external data processors. The main provider receives user
+  prompts and tool results. If `sub_model` is configured, generated code may send
+  selected context to that provider through `llm_query()`.
+- Host logs and telemetry are a separate data sink. Content logging is off by
+  default.
+
+Monty is an application sandbox, not a complete hostile-tenant boundary for a
+compromised native runtime. A regulated deployment should still run the service
+with an unprivileged OS identity, outbound network policy, read-only application
+files and container or VM isolation appropriate to its threat model.
+
+## Implemented controls
+
+- No CPython `exec`, `eval`, dynamic import hook, global `chdir`, or replacement
+  of process-wide stdout/stderr.
+- No filesystem mount, host object, environment, socket, subprocess or OS
+  callback is exposed to generated code.
+- The only optional external callback is `llm_query`; it has call-count, prompt,
+  response, provider timeout, token and suspension limits.
+- Context accepts only bounded JSON-like trees or strings. Structured input is
+  serialized and reconstructed before use so mutable host objects are detached.
+- Code, output, context, memory, recursion, cumulative execution time, checkout
+  time and concurrent worker count are bounded.
+- A memory limit, execution limit, output overflow or worker crash poisons the
+  session; it is closed rather than reused.
+- Tool calls within a run are sequential. Each run receives a new worker, and
+  `__aexit__` performs deterministic cleanup even when a request is cancelled.
+- The process-wide worker ceiling is four, limiting worst-case native worker
+  memory. Scale out with service processes after capacity testing instead of
+  increasing untrusted-code concurrency casually.
+- Code, prompts and outputs are redacted from package logs unless
+  `include_content=True` is deliberately selected.
+- The executable is resolved from an explicit absolute path or the installed
+  `pydantic-monty-runtime` package manifest, never from `PATH` or an environment
+  override. Package-managed workers are automatically verified against the
+  manifest's SHA-256; an optional deployment allow-list adds an independent pin.
+
+## Review of the upstream implementation
+
+The upstream 0.1.2 implementation had several properties that are unsuitable for
+multi-tenant regulated workloads:
+
+- Model code ran through CPython `exec`/`eval` and retained access to imports and
+  host file APIs.
+- Capturing output and changing directories modified process-global state.
+- REPLs lived in a process-global dictionary keyed by task identity and depended
+  on manual cleanup. Identifier reuse and missed cleanup created cross-run data
+  retention and cross-tenant risk.
+- `asyncio.wait_for` could time out the caller while the executor thread and
+  generated code continued running.
+- Session namespaces and temporary resources could outlive the request.
+- Verbose logging emitted generated code, tool results and sub-model content.
+
+The replacement has no global session registry and owns all tenant state inside
+the run-scoped toolset and its one-use worker. Host references to context are
+cleared on first feed and on every close path.
+
+## Production deployment requirements
+
+Before production approval:
+
+1. Build from a reviewed commit and use a lock file with approved package hashes.
+2. Store the Monty worker in a read-only, administrator-owned location; configure
+   its absolute path and approved SHA-256 digest.
+3. Run as an unprivileged service identity in a hardened container or VM. Deny
+   outbound traffic by default and allow only approved model endpoints.
+4. Keep `sub_model=None` unless its provider, region, retention policy and data
+   classification are approved. Treat `llm_query` as deliberate data egress.
+5. Keep content logging disabled. Apply redaction and access control to application,
+   provider and infrastructure telemetry as well.
+6. Set lower per-workload limits where possible and enforce service-level request,
+   tenant, cost and rate limits outside this library.
+7. Run SAST, dependency audit, SBOM/signing, container scanning, penetration tests,
+   load/soak tests and incident-response exercises in the target environment.
+8. Re-review every Pydantic AI or Monty update. The narrow dependency bounds are
+   intentional; do not auto-upgrade the sandbox runtime without validation.
+
+Prefer the async agent API for production requests. The sync compatibility API
+passes a provider timeout, but a non-conforming provider implementation cannot be
+forcibly stopped safely inside the caller's Python thread; enforce an outer
+service-process deadline if sync sub-model calls are unavoidable.
+
+## Validation snapshot
+
+On 2026-09-15, the local branch passed its unit, adversarial, concurrency and
+end-to-end agent tests, Ruff, mypy, Bandit, and `pip-audit`. The lifecycle
+benchmark is reproducible via `benchmarks/sandbox_lifecycle.py`; results for the
+current workstation are in [benchmarks/README.md](benchmarks/README.md).
+
+These results support engineering review; they are not certification, a formal
+penetration test, or an authorization to process central-bank data.
+
+The Windows worker installed from the tested PyPI wheel is not Authenticode
+signed and has no embedded vendor/version metadata. Its local SHA-256 was
+`7bef8adbc8c1dc87a19b32f3a0e76430bc99d33a93e2a1d382a8421a68bea3d8`.
+Treat that value only as evidence for this exact local artifact—not as a vendor
+trust statement. An internal, reviewed artifact-signing and provenance process is
+a production prerequisite for this native executable.

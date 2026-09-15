@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Literal, overload
 
 from pydantic_ai import Agent, UsageLimits
@@ -30,6 +31,17 @@ def create_rlm_agent(
     *,
     grounded: Literal[True],
 ) -> Agent[RLMDependencies, GroundedResponse]: ...
+
+
+@overload
+def create_rlm_agent(
+    model: str = "openai:gpt-5",
+    sub_model: str | None = None,
+    code_timeout: float = 60.0,
+    custom_instructions: str | None = None,
+    *,
+    grounded: bool,
+) -> Agent[RLMDependencies, str] | Agent[RLMDependencies, GroundedResponse]: ...
 
 
 def create_rlm_agent(
@@ -182,11 +194,18 @@ async def run_rlm_analysis(
         print(result.grounding)  # {"1": "increased by 45%", ...}
         ```
     """
-    agent = create_rlm_agent(model=model, sub_model=sub_model, grounded=grounded, **agent_kwargs)
-
-    effective_config = config or RLMConfig()
-    if sub_model and not effective_config.sub_model:
-        effective_config.sub_model = sub_model
+    effective_config = replace(config) if config is not None else RLMConfig()
+    effective_sub_model = sub_model or effective_config.sub_model
+    if effective_sub_model != effective_config.sub_model:
+        effective_config = replace(effective_config, sub_model=effective_sub_model)
+    configured_timeout: float = agent_kwargs.pop("code_timeout", effective_config.code_timeout)
+    agent = create_rlm_agent(
+        model=model,
+        sub_model=effective_sub_model,
+        code_timeout=configured_timeout,
+        grounded=grounded,
+        **agent_kwargs,
+    )
 
     deps = RLMDependencies(
         context=context,
@@ -266,11 +285,18 @@ def run_rlm_analysis_sync(
         print(result.grounding)  # {"1": "increased by 45%", ...}
         ```
     """
-    agent = create_rlm_agent(model=model, sub_model=sub_model, grounded=grounded, **agent_kwargs)
-
-    effective_config = config or RLMConfig()
-    if sub_model and not effective_config.sub_model:
-        effective_config.sub_model = sub_model
+    effective_config = replace(config) if config is not None else RLMConfig()
+    effective_sub_model = sub_model or effective_config.sub_model
+    if effective_sub_model != effective_config.sub_model:
+        effective_config = replace(effective_config, sub_model=effective_sub_model)
+    configured_timeout: float = agent_kwargs.pop("code_timeout", effective_config.code_timeout)
+    agent = create_rlm_agent(
+        model=model,
+        sub_model=effective_sub_model,
+        code_timeout=configured_timeout,
+        grounded=grounded,
+        **agent_kwargs,
+    )
 
     deps = RLMDependencies(
         context=context,

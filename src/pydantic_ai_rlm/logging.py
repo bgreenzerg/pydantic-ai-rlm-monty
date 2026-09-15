@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .repl import REPLResult
@@ -25,8 +25,10 @@ class RLMLogger:
     Falls back to plain text if rich is not installed.
     """
 
-    def __init__(self, enabled: bool = True):
+    def __init__(self, enabled: bool = True, *, include_content: bool = False):
         self.enabled = enabled
+        self.include_content = include_content
+        self.console: Any
         if RICH_AVAILABLE:
             self.console = Console()
         else:
@@ -35,6 +37,14 @@ class RLMLogger:
     def log_code_execution(self, code: str) -> None:
         """Log the code being executed."""
         if not self.enabled:
+            return
+
+        if not self.include_content:
+            message = f"Code execution requested ({len(code.encode('utf-8'))} bytes; content redacted)"
+            if RICH_AVAILABLE and self.console:
+                self.console.print(message)
+            else:
+                print(message)
             return
 
         if RICH_AVAILABLE and self.console:
@@ -56,6 +66,19 @@ class RLMLogger:
     def log_result(self, result: REPLResult) -> None:
         """Log the execution result."""
         if not self.enabled:
+            return
+
+        if not self.include_content:
+            message = (
+                f"Code execution result: success={result.success}, "
+                f"duration={result.execution_time:.3f}s, "
+                f"stdout_bytes={len(result.stdout.encode('utf-8'))}, "
+                f"stderr_bytes={len(result.stderr.encode('utf-8'))}"
+            )
+            if RICH_AVAILABLE and self.console:
+                self.console.print(message)
+            else:
+                print(message)
             return
 
         if RICH_AVAILABLE and self.console:
@@ -180,6 +203,14 @@ class RLMLogger:
         if not self.enabled:
             return
 
+        if not self.include_content:
+            message = f"LLM query ({len(prompt.encode('utf-8'))} bytes; content redacted)"
+            if RICH_AVAILABLE and self.console:
+                self.console.print(message)
+            else:
+                print(message)
+            return
+
         if RICH_AVAILABLE and self.console:
             # Truncate long prompts
             display_prompt = prompt
@@ -206,6 +237,14 @@ class RLMLogger:
     def log_llm_response(self, response: str) -> None:
         """Log an llm_query response."""
         if not self.enabled:
+            return
+
+        if not self.include_content:
+            message = f"LLM response ({len(response.encode('utf-8'))} bytes; content redacted)"
+            if RICH_AVAILABLE and self.console:
+                self.console.print(message)
+            else:
+                print(message)
             return
 
         if RICH_AVAILABLE and self.console:
@@ -244,12 +283,14 @@ def get_logger() -> RLMLogger:
     return _logger
 
 
-def configure_logging(enabled: bool = True) -> RLMLogger:
+def configure_logging(enabled: bool = True, *, include_content: bool = False) -> RLMLogger:
     """
     Configure RLM logging.
 
     Args:
         enabled: Whether to enable logging output
+        include_content: Whether to log model-generated code and model data.
+            This is disabled by default because content may contain sensitive data.
 
     Returns:
         The configured logger instance
@@ -266,5 +307,5 @@ def configure_logging(enabled: bool = True) -> RLMLogger:
         ```
     """
     global _logger
-    _logger = RLMLogger(enabled=enabled)
+    _logger = RLMLogger(enabled=enabled, include_content=include_content)
     return _logger
