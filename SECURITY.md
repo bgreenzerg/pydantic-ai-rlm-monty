@@ -96,9 +96,10 @@ service-process deadline if sync sub-model calls are unavoidable.
 ## Validation snapshot
 
 On 2026-09-15, the local branch passed its unit, adversarial, concurrency and
-end-to-end agent tests, Ruff, mypy, Bandit, and `pip-audit`. The lifecycle
-benchmark is reproducible via `benchmarks/sandbox_lifecycle.py`; results for the
-current workstation are in [benchmarks/README.md](benchmarks/README.md).
+end-to-end agent tests, Ruff, mypy, Bandit, and `pip-audit`. A live synthetic
+OpenRouter workload also exercised repeated Monty tool calls and two nested
+sub-model callbacks. The lifecycle benchmark and live results are reproducible
+from the scripts linked in [benchmarks/README.md](benchmarks/README.md).
 
 These results support engineering review; they are not certification, a formal
 penetration test, or an authorization to process central-bank data.

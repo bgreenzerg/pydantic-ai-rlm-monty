@@ -23,3 +23,25 @@ and worker teardown, plus a fresh SHA-256 verification of the 25 MB native worke
 before each run. This is a local engineering measurement, not a capacity
 claim. Repeat load and soak testing on the production OS, hardware, concurrency,
 context distribution and model-provider path.
+
+## Live OpenRouter integration
+
+`scripts/live_openrouter_smoke.py` completed successfully on 2026-09-15 using
+the locally configured `openai/gpt-5.6-luna` model through OpenRouter and purely
+synthetic input data.
+
+| Measure | Result |
+|---|---:|
+| End-to-end duration | 17.186 seconds |
+| Main-model requests | 6 |
+| Monty `execute_code` calls | 5 |
+| Completed nested `llm_query` calls | 2 |
+| Input tokens | 10,453 |
+| Output tokens | 529 |
+| Provider-reported cost | $0.00106100 |
+| Verification checks | 5/5 passed |
+
+The checks prove that the main model used the RLM tool repeatedly, both nested
+sub-model callbacks started and completed, and the final response contained the
+control identifier extracted from context plus the required sub-model marker.
+Content logging remained disabled throughout the run.

@@ -145,6 +145,19 @@ agent = Agent("openai:gpt-5", toolsets=[toolset])
 
 ## Examples
 
+### Live OpenRouter smoke test
+
+With `OPENROUTER_API_KEY` and `ASSISTANT_MODEL=provider/model` in the ignored
+local `.env` file, run a real main-model, Monty, and nested sub-model flow:
+
+```powershell
+python -m pip install -e ".[openrouter,dev]"
+python scripts\live_openrouter_smoke.py
+```
+
+The workload contains synthetic data only. Logging reports sizes, timings and
+status while leaving prompts, generated code and outputs redacted.
+
 ### Needle in Haystack
 
 Find specific information in massive text:
