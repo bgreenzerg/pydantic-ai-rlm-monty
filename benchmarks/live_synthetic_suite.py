@@ -10,12 +10,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import gc
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
 import time
+import uuid
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -32,6 +34,8 @@ sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 from pydantic_ai_rlm import RLMConfig, RLMDependencies, configure_logging, create_rlm_agent  # noqa: E402
 
 PRIOR_SECRET = "CROSS-RUN-ALPHA-9F27"
+DEFAULT_MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
+DEFAULT_MLFLOW_EXPERIMENT = "pydantic-ai-rlm-synthetic-benchmark"
 
 
 def model_spec() -> str:
@@ -95,15 +99,28 @@ async def monitor_memory(stop: asyncio.Event, process: psutil.Process, peaks: di
         try:
             peaks["parent"] = max(peaks["parent"], process.memory_info().rss)
             children = process.children(recursive=True)
-            child_rss = sum(child.memory_info().rss for child in children if child.is_running())
-            peaks["children"] = max(peaks["children"], child_rss)
-            peaks["child_count"] = max(peaks["child_count"], len(children))
+            workers = [child for child in children if _is_monty_worker(child)]
+            auxiliary = [child for child in children if not _is_monty_worker(child)]
+            worker_rss = sum(child.memory_info().rss for child in workers if child.is_running())
+            auxiliary_rss = sum(child.memory_info().rss for child in auxiliary if child.is_running())
+            peaks["workers"] = max(peaks["workers"], worker_rss)
+            peaks["worker_count"] = max(peaks["worker_count"], len(workers))
+            peaks["auxiliary"] = max(peaks["auxiliary"], auxiliary_rss)
+            peaks["auxiliary_count"] = max(peaks["auxiliary_count"], len(auxiliary))
         except (psutil.Error, OSError):
             pass
         await asyncio.sleep(0.003)
 
 
-async def run_case(agent: Any, logger: Any, process: psutil.Process, spec: dict[str, Any]) -> dict[str, Any]:
+def _is_monty_worker(process: psutil.Process) -> bool:
+    """Distinguish Monty workers from MLflow's persistent Git helpers."""
+    try:
+        return process.name().lower() in {"monty", "monty.exe"}
+    except (psutil.Error, OSError):
+        return False
+
+
+async def _run_case(agent: Any, logger: Any, process: psutil.Process, spec: dict[str, Any]) -> dict[str, Any]:
     """Run and measure a single workload."""
     config = RLMConfig(
         code_timeout=90,
@@ -114,7 +131,13 @@ async def run_case(agent: Any, logger: Any, process: psutil.Process, spec: dict[
     )
     deps = RLMDependencies(context=spec["context"], config=config)
     context_bytes = len(json.dumps(spec["context"], separators=(",", ":")).encode("utf-8"))
-    peaks = {"parent": process.memory_info().rss, "children": 0, "child_count": 0}
+    peaks = {
+        "parent": process.memory_info().rss,
+        "workers": 0,
+        "worker_count": 0,
+        "auxiliary": 0,
+        "auxiliary_count": 0,
+    }
     stop = asyncio.Event()
     monitor = asyncio.create_task(monitor_memory(stop, process, peaks))
     started = time.perf_counter()
@@ -175,8 +198,10 @@ async def run_case(agent: Any, logger: Any, process: psutil.Process, spec: dict[
     execution_times = [float(value) for value in re.findall(r"Execution time: ([0-9.]+)s", tool_text)]
     usage = result.usage
     await asyncio.sleep(0.05)
-    remaining_children = len(process.children(recursive=True))
-    checks["worker_cleanup"] = remaining_children == 0
+    remaining_children = process.children(recursive=True)
+    remaining_workers = sum(_is_monty_worker(child) for child in remaining_children)
+    remaining_auxiliary = len(remaining_children) - remaining_workers
+    checks["worker_cleanup"] = remaining_workers == 0
     return {
         "name": spec["name"],
         "passed": all(checks.values()),
@@ -192,11 +217,84 @@ async def run_case(agent: Any, logger: Any, process: psutil.Process, spec: dict[
         "requests": usage.requests,
         "provider_cost_usd": str(usage.cost or Decimal(0)),
         "peak_parent_rss_mb": round(peaks["parent"] / 1_000_000, 3),
-        "peak_worker_rss_mb": round(peaks["children"] / 1_000_000, 3),
-        "peak_worker_count": peaks["child_count"],
-        "remaining_worker_count": remaining_children,
+        "peak_worker_rss_mb": round(peaks["workers"] / 1_000_000, 3),
+        "peak_worker_count": peaks["worker_count"],
+        "remaining_worker_count": remaining_workers,
+        "peak_auxiliary_child_rss_mb": round(peaks["auxiliary"] / 1_000_000, 3),
+        "peak_auxiliary_child_count": peaks["auxiliary_count"],
+        "remaining_auxiliary_child_count": remaining_auxiliary,
         "answer": result.output,
     }
+
+
+async def run_case(
+    agent: Any,
+    logger: Any,
+    process: psutil.Process,
+    spec: dict[str, Any],
+    mlflow: Any,
+    suite_id: str,
+) -> dict[str, Any]:
+    """Run one case inside a guaranteed benchmark root trace.
+
+    Pydantic AI autologging creates the nested agent, model, and tool spans.
+    The manual root span guarantees a trace with benchmark inputs and checks
+    even if a future Pydantic AI release temporarily breaks autologging.
+    """
+    serialized_context = json.dumps(spec["context"], ensure_ascii=False, separators=(",", ":"))
+    context_digest = hashlib.sha256(serialized_context.encode("utf-8")).hexdigest()
+    trace_attributes = {
+        "benchmark.suite_id": suite_id,
+        "benchmark.case": spec["name"],
+        "benchmark.synthetic_data_only": True,
+        "benchmark.model": model_spec(),
+        "benchmark.git_commit": git_commit() or "unknown",
+    }
+    with mlflow.start_span(
+        name=f"rlm.synthetic.{spec['name']}",
+        span_type="CHAIN",
+        attributes=trace_attributes,
+    ) as span:
+        trace_id = span.trace_id
+        mlflow.set_trace_tag(trace_id, "benchmark.suite_id", suite_id)
+        mlflow.set_trace_tag(trace_id, "benchmark.case", spec["name"])
+        mlflow.set_trace_tag(trace_id, "benchmark.synthetic_data_only", "true")
+        span.set_inputs(
+            {
+                "query": spec["query"],
+                "context_sha256": context_digest,
+                "context_bytes": len(serialized_context.encode("utf-8")),
+                "expected_markers": spec["expected_markers"],
+                "minimum_execute_calls": spec["min_execute_calls"],
+                "minimum_submodel_calls": spec["min_submodel_calls"],
+            }
+        )
+        report = await _run_case(agent, logger, process, spec)
+        report["mlflow_trace_id"] = trace_id
+        if not report["passed"]:
+            span.record_exception(RuntimeError(f"benchmark case failed: {report.get('failure', 'assertion failure')}"))
+        span.set_outputs(
+            {
+                "passed": report["passed"],
+                "checks": report.get("checks", {}),
+                "answer": report.get("answer"),
+                "failure": report.get("failure"),
+            }
+        )
+        span.set_attributes(
+            {
+                "benchmark.passed": report["passed"],
+                "benchmark.elapsed_seconds": report["elapsed_seconds"],
+                "benchmark.context_bytes": report["context_bytes"],
+                "benchmark.execute_code_calls": report.get("execute_code_calls", 0),
+                "benchmark.nested_llm_queries": report.get("nested_llm_queries", 0),
+                "benchmark.input_tokens": report.get("input_tokens", 0),
+                "benchmark.output_tokens": report.get("output_tokens", 0),
+                "benchmark.peak_parent_rss_mb": report.get("peak_parent_rss_mb", 0),
+                "benchmark.peak_worker_rss_mb": report.get("peak_worker_rss_mb", 0),
+            }
+        )
+        return report
 
 
 def build_cases() -> list[dict[str, Any]]:
@@ -295,12 +393,29 @@ def git_commit() -> str | None:
         return None
 
 
-async def run_suite() -> dict[str, Any]:
+def configure_mlflow(tracking_uri: str, experiment_name: str) -> tuple[Any, str]:
+    """Connect to MLflow and enable nested Pydantic AI auto-tracing."""
+    os.environ.setdefault("MLFLOW_DISABLE_AGENT_HINT", "1")
+    try:
+        import mlflow
+        import mlflow.pydantic_ai
+    except ImportError as exc:
+        raise RuntimeError("MLflow tracing is required; install with `uv sync --extra openrouter --extra observability`") from exc
+
+    mlflow.set_tracking_uri(tracking_uri)
+    experiment = mlflow.set_experiment(experiment_name)
+    mlflow.pydantic_ai.autolog(log_traces=True, silent=False)
+    return mlflow, experiment.experiment_id
+
+
+async def run_suite(*, tracking_uri: str, experiment_name: str) -> dict[str, Any]:
     """Run all cases serially and return the complete report."""
     load_dotenv(REPOSITORY_ROOT / ".env", override=False)
     if not os.getenv("OPENROUTER_API_KEY") or not os.getenv("ASSISTANT_MODEL"):
         raise RuntimeError("required environment configuration is missing")
     os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
+    mlflow, experiment_id = configure_mlflow(tracking_uri, experiment_name)
+    suite_id = str(uuid.uuid4())
 
     process = psutil.Process()
     gc.collect()
@@ -310,7 +425,7 @@ async def run_suite() -> dict[str, Any]:
     suite_started = time.perf_counter()
     results = []
     for case in build_cases():
-        result = await run_case(agent, logger, process, case)
+        result = await run_case(agent, logger, process, case, mlflow, suite_id)
         results.append(result)
         print(
             json.dumps({"progress": result["name"], "passed": result["passed"], "seconds": result["elapsed_seconds"]}),
@@ -320,15 +435,30 @@ async def run_suite() -> dict[str, Any]:
 
     gc.collect()
     await asyncio.sleep(0.2)
+    mlflow.flush_trace_async_logging()
+    verified_trace_count = sum(mlflow.get_trace(result["mlflow_trace_id"], silent=True, flush=True) is not None for result in results)
     final_rss = process.memory_info().rss
+    final_children = process.children(recursive=True)
+    remaining_monty_workers = sum(_is_monty_worker(child) for child in final_children)
     costs = sum(Decimal(result.get("provider_cost_usd", "0")) for result in results)
+    cases_passed = sum(result["passed"] for result in results)
+    tracing_complete = verified_trace_count == len(results)
     return {
         "schema_version": 1,
-        "suite_passed": all(result["passed"] for result in results),
+        "suite_passed": cases_passed == len(results) and tracing_complete,
         "commit": git_commit(),
         "model": model_spec(),
         "synthetic_data_only": True,
-        "cases_passed": sum(result["passed"] for result in results),
+        "mlflow": {
+            "tracking_uri": tracking_uri,
+            "experiment_name": experiment_name,
+            "experiment_id": experiment_id,
+            "suite_id": suite_id,
+            "trace_count_verified": verified_trace_count,
+            "tracing_complete": tracing_complete,
+            "client_version": mlflow.__version__,
+        },
+        "cases_passed": cases_passed,
         "cases_total": len(results),
         "suite_elapsed_seconds": round(time.perf_counter() - suite_started, 3),
         "total_requests": sum(result.get("requests", 0) for result in results),
@@ -340,11 +470,13 @@ async def run_suite() -> dict[str, Any]:
         "parent_rss_baseline_mb": round(baseline_rss / 1_000_000, 3),
         "parent_rss_final_mb": round(final_rss / 1_000_000, 3),
         "parent_rss_delta_mb": round((final_rss - baseline_rss) / 1_000_000, 3),
-        "remaining_child_processes": len(process.children(recursive=True)),
+        "remaining_monty_workers": remaining_monty_workers,
+        "remaining_auxiliary_child_processes": len(final_children) - remaining_monty_workers,
         "measurement_notes": [
             "Provider usage and cost cover main-agent requests only.",
             "Nested llm_query usage is not aggregated by the current implementation.",
             "RSS is sampled and very short-lived peaks may be missed.",
+            "End-to-end latency and parent RSS include MLflow tracing overhead.",
         ],
         "results": results,
     }
@@ -354,9 +486,24 @@ def main() -> None:
     """Parse CLI options, execute the suite, and emit JSON."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, help="Optional UTF-8 JSON report path")
+    parser.add_argument(
+        "--mlflow-tracking-uri",
+        default=os.getenv("MLFLOW_TRACKING_URI", DEFAULT_MLFLOW_TRACKING_URI),
+        help=f"MLflow server URI (default: {DEFAULT_MLFLOW_TRACKING_URI})",
+    )
+    parser.add_argument(
+        "--mlflow-experiment",
+        default=os.getenv("MLFLOW_EXPERIMENT_NAME", DEFAULT_MLFLOW_EXPERIMENT),
+        help=f"MLflow experiment name (default: {DEFAULT_MLFLOW_EXPERIMENT})",
+    )
     args = parser.parse_args()
     try:
-        report = asyncio.run(run_suite())
+        report = asyncio.run(
+            run_suite(
+                tracking_uri=args.mlflow_tracking_uri,
+                experiment_name=args.mlflow_experiment,
+            )
+        )
     except Exception as exc:
         print(f"Live synthetic suite failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         raise SystemExit(1) from None

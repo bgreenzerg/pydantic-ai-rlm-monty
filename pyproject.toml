@@ -48,6 +48,9 @@ openrouter = [
     "pydantic-ai-slim[openai]>=2.43.0,<2.44.0",
     "python-dotenv>=1.1,<2",
 ]
+observability = [
+    "mlflow-skinny>=3.15,<3.17",
+]
 
 [build-system]
 requires = ["hatchling"]

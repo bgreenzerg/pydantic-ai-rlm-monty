@@ -37,13 +37,32 @@ the real main model, OpenRouter, and Monty sandbox:
 
 The script derives the expected answers independently, checks every final answer,
 counts model and tool calls, samples parent/worker RSS, checks worker teardown,
-and prints a machine-readable JSON report. It loads the ignored `.env` file and
-requires `OPENROUTER_API_KEY` plus `ASSISTANT_MODEL`.
+and prints a machine-readable JSON report. It also requires MLflow tracing: each
+case becomes a root trace with nested Pydantic AI agent, model, and tool spans.
+Trace IDs and the shared suite ID are included in the JSON report. The benchmark
+fails if all five root traces cannot be read back from MLflow.
+
+Install the two optional dependency groups before running it:
+
+```powershell
+.\.venv\Scripts\uv.exe sync --extra openrouter --extra observability
+```
+
+The script loads the ignored `.env` file and requires `OPENROUTER_API_KEY` plus
+`ASSISTANT_MODEL`. MLflow defaults to the local server at
+`http://127.0.0.1:5000` and experiment `pydantic-ai-rlm-synthetic-benchmark`.
+Override those values with `MLFLOW_TRACKING_URI` and `MLFLOW_EXPERIMENT_NAME`, or
+the corresponding command-line flags.
 
 ```powershell
 .\.venv\Scripts\python.exe benchmarks\live_synthetic_suite.py `
   --output benchmark-results\live-suite.json
 ```
+
+Open `http://127.0.0.1:5000` after the run and select the experiment named above.
+All workload context is synthetic. MLflow autologging records prompts, generated
+code, tool results, model responses, latency, and token usage; it does not receive
+the OpenRouter API key. End-to-end timing and parent RSS include tracing overhead.
 
 The provider-reported token and cost totals currently cover main-agent requests
 only. Nested `llm_query` calls are counted, but their token usage and cost are not
