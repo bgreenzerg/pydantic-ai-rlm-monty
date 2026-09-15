@@ -3,12 +3,13 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, Literal, overload
 
-from pydantic_ai import Agent, UsageLimits
+from pydantic_ai import Agent, ModelRetry, RunContext, UsageLimits
 
 from .dependencies import ContextType, RLMConfig, RLMDependencies
 from .models import GroundedResponse
 from .prompts import build_rlm_instructions
 from .toolset import create_rlm_toolset
+from .validation import arithmetic_consistency_errors
 
 
 @overload
@@ -110,6 +111,21 @@ def create_rlm_agent(
         toolsets=[toolset],
         instructions=instructions,
     )
+
+    @agent.output_validator
+    def validate_output_arithmetic(ctx: RunContext[RLMDependencies], output: Any) -> Any:
+        if not ctx.deps.config.validate_arithmetic:
+            return output
+        text = output.info if isinstance(output, GroundedResponse) else str(output)
+        errors = arithmetic_consistency_errors(text)
+        if errors:
+            details = "; ".join(errors)
+            raise ModelRetry(
+                "The proposed final answer contains internally inconsistent arithmetic: "
+                f"{details}. Recalculate every affected value with execute_code, propagate the corrections, "
+                "and return a fully corrected answer."
+            )
+        return output
 
     return agent
 

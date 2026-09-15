@@ -61,12 +61,28 @@ def test_code_size_is_bounded() -> None:
         repl.execute("print('too large')")
 
 
-def test_output_bomb_poisoned_session() -> None:
-    config = RLMConfig(max_output_bytes=1024, truncate_output_chars=1024)
+def test_large_output_is_truncated_without_losing_session_state() -> None:
+    config = RLMConfig(max_output_bytes=1024, max_emitted_output_bytes=8192, truncate_output_chars=1024)
+    repl = REPLEnvironment("x", config)
+    result = repl.execute("saved = 42\nprint('x' * 4096)")
+
+    assert result.success
+    assert result.output_truncated
+    assert result.emitted_output_bytes == 4097
+    assert "printed output safely truncated" in result.stdout
+    assert len(result.stdout.encode("utf-8")) <= config.max_output_bytes
+    assert repl.execute("saved + 1").stdout == "43\n"
+    repl.close()
+
+
+def test_output_flood_is_fatal_only_at_hard_limit() -> None:
+    config = RLMConfig(max_output_bytes=1024, max_emitted_output_bytes=2048, truncate_output_chars=1024)
     repl = REPLEnvironment("x", config)
     result = repl.execute("print('x' * 4096)")
 
     assert not result.success
+    assert result.fatal
+    assert result.failure_kind == "output_flood"
     assert "MemoryError" in result.stderr
     with pytest.raises(RuntimeError, match="closed or unusable"):
         repl.execute("1 + 1")
@@ -95,6 +111,8 @@ def test_timeout_poisoned_session() -> None:
     result = repl.execute("while True:\n    pass")
 
     assert not result.success
+    assert result.fatal
+    assert result.failure_kind == "execution_timeout"
     assert "TimeoutError" in result.stderr
     with pytest.raises(RuntimeError, match="closed or unusable"):
         repl.execute("1 + 1")
@@ -116,6 +134,18 @@ async def test_concurrent_tenants_are_isolated() -> None:
         for other in range(6):
             if other != index:
                 assert f"tenant-{other}-sentinel" not in output
+
+
+@pytest.mark.asyncio
+async def test_async_large_output_is_truncated_without_losing_session_state() -> None:
+    config = RLMConfig(max_output_bytes=1024, max_emitted_output_bytes=8192, truncate_output_chars=1024)
+    async with AsyncREPLEnvironment("x", config) as repl:
+        result = await repl.execute("saved = 42\nprint('x' * 4096)")
+
+        assert result.success
+        assert result.output_truncated
+        assert "printed output safely truncated" in result.stdout
+        assert (await repl.execute("saved + 1")).stdout == "43\n"
 
 
 @pytest.mark.asyncio

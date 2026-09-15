@@ -279,6 +279,9 @@ deps = RLMDependencies(
     config=RLMConfig(
         code_timeout=60.0,
         truncate_output_chars=50_000,
+        max_output_bytes=50_000,             # Soft output retained for the model
+        max_emitted_output_bytes=4 * 1024 * 1024,  # Hard per-snippet flood limit
+        validate_arithmetic=True,            # Retry inconsistent simple equations
         sub_model="openai:gpt-5-mini",
     ),
 )
@@ -344,7 +347,22 @@ The sandboxed REPL provides:
 | Safe built-ins | `print`, `len`, `range`, etc. |
 | Supported imports | Monty's capability-free Python subset |
 | Persistent state | Variables persist across executions |
-| Output capture | stdout/stderr returned to agent |
+| Output capture | stdout/stderr is soft-truncated without discarding REPL state |
+
+`max_output_bytes` is the soft response budget: output beyond it is discarded
+and the agent receives an explicit truncation notice while sandbox variables
+remain usable. `max_emitted_output_bytes` is a separate hard flood limit. A
+snippet exceeding that limit, the memory limit, or a terminal execution limit
+invalidates the complete agent run; callers receive `SandboxFatalError` instead
+of an apparently successful answer. Retry such a request only as a new run with
+a fresh sandbox and the original immutable input.
+
+Final string answers also receive a bounded deterministic consistency check for
+simple arithmetic equations. It parses only numeric arithmetic into a restricted
+AST and evaluates with `Decimal`; model text is never executed. An inconsistent
+equation triggers a Pydantic output retry. This catches transcription mistakes,
+but it is not a substitute for domain-specific validation of source selection,
+formulas, or conclusions.
 
 Each run gets a newly spawned worker that is destroyed at run completion. The
 sandbox has no filesystem mounts, environment variables, sockets, subprocesses,

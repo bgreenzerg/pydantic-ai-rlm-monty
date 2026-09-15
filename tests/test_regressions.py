@@ -23,12 +23,34 @@ def test_logging_redacts_content_by_default(capsys) -> None:
     assert "content redacted" in output
 
 
+def test_logging_reports_truncation_without_content(capsys) -> None:
+    from pydantic_ai_rlm import REPLResult
+
+    logger = configure_logging(enabled=True)
+    logger.log_result(
+        REPLResult(
+            stdout="bank-central-secret",
+            stderr="",
+            locals={},
+            execution_time=0.1,
+            output_truncated=True,
+            emitted_output_bytes=100_000,
+        )
+    )
+    output = capsys.readouterr().out
+
+    assert "bank-central-secret" not in output
+    assert "emitted_output_bytes=100000" in output
+    assert "output_truncated=True" in output
+
+
 def test_defaults_are_all_bounded() -> None:
     config = RLMConfig()
     assert config.code_timeout > 0
     assert config.max_context_bytes > 0
     assert config.max_code_bytes > 0
     assert config.max_output_bytes > 0
+    assert config.max_emitted_output_bytes >= config.max_output_bytes
     assert config.max_memory_bytes > 0
     assert config.max_total_execution_seconds > 0
     assert config.max_suspensions > 0

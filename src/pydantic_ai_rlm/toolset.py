@@ -19,7 +19,8 @@ Execute Python code in a sandboxed REPL environment.
 - A `context` variable is pre-loaded with the data to analyze
 - Variables persist between executions within the same session
 - Standard library modules are available (json, re, collections, etc.)
-- Use print() to display output
+- Use print() only for compact results that you need to inspect
+- Printed output is safely truncated at a configured limit without losing REPL state
 
 ## When to Use
 - Analyzing or processing structured data (JSON, dicts, lists)
@@ -30,13 +31,17 @@ Execute Python code in a sandboxed REPL environment.
 ## Best Practices
 1. Start by exploring the context: `print(type(context))`, `print(len(context))`
 2. Break complex operations into smaller steps
-3. Use print() liberally to understand intermediate results
-4. Handle potential errors gracefully with try/except
+3. Never print an entire dataset or collection; print counts, aggregates, top-k rows, IDs, or bounded excerpts
+4. Prefer `sum(1 for item in values if predicate)` over summing booleans for Monty compatibility
+5. If output is truncated, reuse persistent variables and issue a smaller, more selective query
+6. Handle ordinary code errors gracefully with a corrected snippet
 
 ## Available Functions
 - `llm_query(prompt)`: Query the LLM for reasoning assistance (if configured)
 - Important: Do not use `llm_query` in the first code execution. Use it only after you have
   explored the context and identified specific sections that need semantic analysis.
+- If you claim an independent semantic review, you must actually call `llm_query` on the
+  bounded evidence subset and reconcile its result with deterministic counts.
 
 ## Example
 ```python
@@ -50,6 +55,10 @@ if isinstance(context, dict):
         print(f"{key}: {type(value)}")
 ```
 """
+
+
+class SandboxFatalError(RuntimeError):
+    """A fatal sandbox condition that invalidates the complete agent run."""
 
 
 def create_rlm_toolset(
@@ -159,7 +168,10 @@ class _RunMontyRLMToolset(FunctionToolset[RLMDependencies]):
     async def __aenter__(self) -> _RunMontyRLMToolset:
         if self._repl is not None:
             raise RuntimeError("sandbox session is already active")
-        repl = AsyncREPLEnvironment(self._context, self._config)
+        context = self._context
+        if context is None:
+            raise SandboxFatalError("sandbox context is unavailable; agent run is invalid")
+        repl = AsyncREPLEnvironment(context, self._config)
         try:
             await repl.open()
         except BaseException:
@@ -182,16 +194,17 @@ class _RunMontyRLMToolset(FunctionToolset[RLMDependencies]):
     async def _execute_code(self, code: str) -> str:
         repl = self._repl
         if repl is None:
-            return "Error executing code: sandbox session is not active"
+            raise SandboxFatalError("sandbox session is not active; agent run is invalid")
         logger = get_logger()
         logger.log_code_execution(code)
         try:
-            async with asyncio.timeout(self._config.code_timeout):
-                result: REPLResult = await repl.execute(code)
+            result: REPLResult = await asyncio.wait_for(repl.execute(code), timeout=self._config.code_timeout)
         except TimeoutError:
             await repl.close()
             self._repl = None
-            return f"Error: Code execution timed out after {self._config.code_timeout} seconds."
+            raise SandboxFatalError(
+                f"sandbox execution exceeded the {self._config.code_timeout:g}-second host deadline; agent run is invalid"
+            ) from None
         except asyncio.CancelledError:
             try:
                 await repl.close()
@@ -201,9 +214,14 @@ class _RunMontyRLMToolset(FunctionToolset[RLMDependencies]):
         except Exception as exc:
             await repl.close()
             self._repl = None
-            return f"Error executing code: {type(exc).__name__}: {exc}"
+            raise SandboxFatalError("sandbox execution failed internally; agent run is invalid") from exc
 
         logger.log_result(result)
+        if result.fatal:
+            await repl.close()
+            self._repl = None
+            kind = result.failure_kind or "unknown"
+            raise SandboxFatalError(f"sandbox terminated ({kind}); agent run is invalid")
         return format_repl_result(result)
 
 

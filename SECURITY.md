@@ -32,10 +32,18 @@ files and container or VM isolation appropriate to its threat model.
   response, provider timeout, token and suspension limits.
 - Context accepts only bounded JSON-like trees or strings. Structured input is
   serialized and reconstructed before use so mutable host objects are detached.
-- Code, output, context, memory, recursion, cumulative execution time, checkout
-  time and concurrent worker count are bounded.
-- A memory limit, execution limit, output overflow or worker crash poisons the
-  session; it is closed rather than reused.
+- Code, context, memory, recursion, cumulative execution time, checkout time and
+  concurrent worker count are bounded. Printed output has a smaller soft return
+  budget and a separate finite hard emission budget.
+- Crossing the soft output budget discards excess bytes and reports truncation
+  without destroying persistent REPL state. A hard output flood, memory limit,
+  terminal execution limit or worker crash poisons and closes the session.
+- Fatal sandbox conditions propagate as `SandboxFatalError`, invalidating the
+  complete agent run instead of allowing the model to return an unsupported
+  normal answer. Any retry must start a new run and worker from immutable input.
+- Final answers are checked for internally contradictory simple numeric
+  equations by a restricted AST/`Decimal` parser. The validator never executes
+  model text and requests a corrected model response when it finds a mismatch.
 - Tool calls within a run are sequential. Each run receives a new worker, and
   `__aexit__` performs deterministic cleanup even when a request is cancelled.
 - The process-wide worker ceiling is four, limiting worst-case native worker
@@ -87,6 +95,10 @@ Before production approval:
    load/soak tests and incident-response exercises in the target environment.
 8. Re-review every Pydantic AI or Monty update. The narrow dependency bounds are
    intentional; do not auto-upgrade the sandbox runtime without validation.
+
+The arithmetic validator is defence in depth, not a general factual verifier.
+Regulated workflows must additionally validate task-specific invariants and
+source provenance before committing financial or operational decisions.
 
 Prefer the async agent API for production requests. The sync compatibility API
 passes a provider timeout, but a non-conforming provider implementation cannot be

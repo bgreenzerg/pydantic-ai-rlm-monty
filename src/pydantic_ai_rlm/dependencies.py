@@ -42,7 +42,13 @@ class RLMConfig:
     """Maximum UTF-8 size of one generated code snippet."""
 
     max_output_bytes: int = 50_000
-    """Maximum bytes of stdout/stderr collected from one snippet."""
+    """Maximum UTF-8 bytes of sandbox output retained for the main model."""
+
+    max_emitted_output_bytes: int = 4 * 1024 * 1024
+    """Hard cap on bytes emitted by one snippet before the feed is terminated."""
+
+    validate_arithmetic: bool = True
+    """Reject final answers containing internally inconsistent simple equations."""
 
     max_memory_bytes: int = 256 * 1024 * 1024
     """Maximum Monty worker heap allocation."""
@@ -76,6 +82,8 @@ class RLMConfig:
 
     def __post_init__(self) -> None:  # noqa: C901
         """Reject unbounded or otherwise invalid resource settings."""
+        if not isinstance(self.validate_arithmetic, bool):
+            raise TypeError("validate_arithmetic must be a boolean")
         positive_integers = {
             "truncate_output_chars": self.truncate_output_chars,
             "max_context_bytes": self.max_context_bytes,
@@ -83,6 +91,7 @@ class RLMConfig:
             "max_context_items": self.max_context_items,
             "max_code_bytes": self.max_code_bytes,
             "max_output_bytes": self.max_output_bytes,
+            "max_emitted_output_bytes": self.max_emitted_output_bytes,
             "max_memory_bytes": self.max_memory_bytes,
             "max_recursion_depth": self.max_recursion_depth,
             "max_suspensions": self.max_suspensions,
@@ -122,6 +131,8 @@ class RLMConfig:
             raise ValueError("max_code_bytes cannot exceed 10 MiB")
         if self.max_output_bytes > 10 * 1024 * 1024:
             raise ValueError("max_output_bytes cannot exceed 10 MiB")
+        if self.max_emitted_output_bytes > 64 * 1024 * 1024:
+            raise ValueError("max_emitted_output_bytes cannot exceed 64 MiB")
         if self.max_submodel_prompt_bytes > 10 * 1024 * 1024:
             raise ValueError("max_submodel_prompt_bytes cannot exceed 10 MiB")
         if self.max_submodel_output_bytes > 10 * 1024 * 1024:
@@ -138,6 +149,8 @@ class RLMConfig:
             raise ValueError("max_submodel_calls cannot exceed max_suspensions")
         if self.max_output_bytes > self.max_memory_bytes // 4:
             raise ValueError("max_output_bytes cannot exceed one quarter of max_memory_bytes")
+        if self.max_emitted_output_bytes < self.max_output_bytes:
+            raise ValueError("max_emitted_output_bytes cannot be smaller than max_output_bytes")
         if self.sub_model and self.max_submodel_output_bytes > self.max_memory_bytes // 4:
             raise ValueError("max_submodel_output_bytes cannot exceed one quarter of max_memory_bytes")
         if self.sub_model is not None and not isinstance(self.sub_model, str):

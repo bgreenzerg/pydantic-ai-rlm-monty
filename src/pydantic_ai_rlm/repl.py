@@ -57,6 +57,18 @@ class REPLResult:
     success: bool = True
     """Whether execution completed without an interpreter error."""
 
+    output_truncated: bool = False
+    """Whether printed output was safely shortened before returning it to the model."""
+
+    emitted_output_bytes: int = 0
+    """Total UTF-8 bytes printed by the snippet before any soft truncation."""
+
+    fatal: bool = False
+    """Whether the sandbox can no longer be trusted for this agent run."""
+
+    failure_kind: str | None = None
+    """Stable, content-free failure category for controller decisions and telemetry."""
+
     def __str__(self) -> str:
         return f"REPLResult(success={self.success}, stdout={self.stdout[:100]}..., stderr={self.stderr[:100]}...)"
 
@@ -149,24 +161,84 @@ def _validate_code(code: str, config: RLMConfig) -> str:
     return normalized
 
 
-def _split_output(collector: CollectStreams) -> tuple[str, str]:
+@dataclass(frozen=True)
+class _CapturedOutput:
+    stdout: str
+    stderr: str
+    emitted_bytes: int
+    retained_bytes: int
+    truncated: bool
+
+
+def _utf8_prefix(value: str, max_bytes: int) -> str:
+    if max_bytes <= 0:
+        return ""
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def _split_output(collector: CollectStreams, config: RLMConfig) -> _CapturedOutput:
     stdout: list[str] = []
     stderr: list[str] = []
+    remaining_bytes = config.max_output_bytes
+    remaining_chars = config.truncate_output_chars
+    emitted_bytes = 0
+    retained_bytes = 0
+    truncated = False
     for stream, value in collector.output:
-        (stdout if stream == "stdout" else stderr).append(value)
-    return "".join(stdout), "".join(stderr)
+        encoded = value.encode("utf-8")
+        emitted_bytes += len(encoded)
+        if remaining_bytes <= 0 or remaining_chars <= 0:
+            truncated = truncated or bool(value)
+            continue
+        retained = value[:remaining_chars]
+        retained = _utf8_prefix(retained, remaining_bytes)
+        retained_size = len(retained.encode("utf-8"))
+        retained_bytes += retained_size
+        remaining_bytes -= retained_size
+        remaining_chars -= len(retained)
+        truncated = truncated or retained != value
+        (stdout if stream == "stdout" else stderr).append(retained)
+    return _CapturedOutput(
+        stdout="".join(stdout),
+        stderr="".join(stderr),
+        emitted_bytes=emitted_bytes,
+        retained_bytes=retained_bytes,
+        truncated=truncated,
+    )
 
 
 def _bounded_text(value: str, config: RLMConfig) -> str:
+    suffix = "\n... (output truncated)"
     max_chars = config.truncate_output_chars
     if len(value) > max_chars:
-        value = value[:max_chars] + "\n... (output truncated)"
+        suffix_chars = suffix[:max_chars]
+        value = value[: max(0, max_chars - len(suffix_chars))] + suffix_chars
     encoded = value.encode("utf-8")
     if len(encoded) > config.max_output_bytes:
-        suffix = b"\n... (output truncated)"
-        prefix_size = max(0, config.max_output_bytes - len(suffix))
-        value = encoded[:prefix_size].decode("utf-8", errors="ignore") + suffix.decode()
+        encoded_suffix = suffix.encode("utf-8")[: config.max_output_bytes]
+        prefix_size = max(0, config.max_output_bytes - len(encoded_suffix))
+        value = encoded[:prefix_size].decode("utf-8", errors="ignore") + encoded_suffix.decode(
+            "utf-8", errors="ignore"
+        )
     return value
+
+
+def _with_truncation_notice(value: str, captured: _CapturedOutput, config: RLMConfig) -> str:
+    if not captured.truncated:
+        return value
+    notice = (
+        f"\n... [printed output safely truncated: {captured.emitted_bytes} bytes emitted; "
+        f"return capped at {config.max_output_bytes} bytes. REPL state is still available; "
+        "use counts, aggregation, top-k results, IDs, or bounded excerpts next.]"
+    )
+    notice = _utf8_prefix(notice[: config.truncate_output_chars], config.max_output_bytes)
+    content_char_budget = max(0, config.truncate_output_chars - len(notice))
+    content_byte_budget = max(0, config.max_output_bytes - len(notice.encode("utf-8")))
+    prefix = _utf8_prefix(value[:content_char_budget], content_byte_budget)
+    return f"{prefix}{notice}"
 
 
 def _append_result(stdout: str, value: Any, config: RLMConfig) -> str:
@@ -198,6 +270,20 @@ def _is_terminal(exc: BaseException) -> bool:
         with contextlib.suppress(Exception):
             return isinstance(exc.exception(), (MemoryError, TimeoutError))
     return False
+
+
+def _failure_kind(exc: BaseException, error: str, config: RLMConfig) -> str:
+    if isinstance(exc, MontyCrashedError):
+        return "worker_crash"
+    if isinstance(exc, MontyRuntimeError):
+        with contextlib.suppress(Exception):
+            runtime_exception = exc.exception()
+            if isinstance(runtime_exception, MemoryError):
+                hard_limit = f"> {config.max_emitted_output_bytes} bytes"
+                return "output_flood" if hard_limit in error else "memory_limit"
+            if isinstance(runtime_exception, TimeoutError):
+                return "execution_timeout"
+    return "code_error"
 
 
 async def _close_async_context(
@@ -300,7 +386,7 @@ class REPLEnvironment:
         if self._closed or self._poisoned or self._session is None:
             raise RuntimeError("sandbox session is closed or unusable")
         normalized = _validate_code(code, self.config)
-        collector = CollectStreams(max_bytes=self.config.max_output_bytes)
+        collector = CollectStreams(max_bytes=self.config.max_emitted_output_bytes)
         inputs = {"context": self._context} if self._context_pending else None
         # The worker owns the only remaining copy after this feed. Keeping a
         # host-side reference would double peak tenant-data retention.
@@ -315,25 +401,36 @@ class REPLEnvironment:
                 external_lookup=external_lookup,
                 print_callback=collector,
             )
-            stdout, stderr = _split_output(collector)
+            captured = _split_output(collector, self.config)
+            stdout = _append_result(captured.stdout, value, self.config)
+            stdout = _with_truncation_notice(stdout, captured, self.config)
             return REPLResult(
-                stdout=_append_result(stdout, value, self.config),
-                stderr=_bounded_text(stderr, self.config),
+                stdout=stdout,
+                stderr=_bounded_text(captured.stderr, self.config),
                 locals={},
                 execution_time=time.perf_counter() - started,
+                output_truncated=captured.truncated,
+                emitted_output_bytes=captured.emitted_bytes,
             )
         except MontyError as exc:
-            stdout, stderr = _split_output(collector)
-            if _is_terminal(exc):
+            captured = _split_output(collector, self.config)
+            terminal = _is_terminal(exc)
+            if terminal:
                 self._poisoned = True
                 self.cleanup()
             error = _error_text(exc)
+            failure_kind = _failure_kind(exc, error, self.config)
+            stdout = _with_truncation_notice(_bounded_text(captured.stdout, self.config), captured, self.config)
             return REPLResult(
-                stdout=_bounded_text(stdout, self.config),
-                stderr=_bounded_text(f"{stderr}\nError: {error}".lstrip(), self.config),
+                stdout=stdout,
+                stderr=_bounded_text(f"{captured.stderr}\nError: {error}".lstrip(), self.config),
                 locals={},
                 execution_time=time.perf_counter() - started,
                 success=False,
+                output_truncated=captured.truncated,
+                emitted_output_bytes=captured.emitted_bytes,
+                fatal=terminal,
+                failure_kind=failure_kind,
             )
 
     def cleanup(self) -> None:
@@ -452,7 +549,7 @@ class AsyncREPLEnvironment:
         if self._closed or self._poisoned or self._session is None:
             raise RuntimeError("sandbox session is closed or unusable")
         normalized = _validate_code(code, self.config)
-        collector = CollectStreams(max_bytes=self.config.max_output_bytes)
+        collector = CollectStreams(max_bytes=self.config.max_emitted_output_bytes)
         inputs = {"context": self._context} if self._context_pending else None
         # Drop host-side tenant data before crossing the async cancellation
         # boundary. The local ``inputs`` reference dies when this call returns.
@@ -467,25 +564,36 @@ class AsyncREPLEnvironment:
                 external_lookup=external_lookup,
                 print_callback=collector,
             )
-            stdout, stderr = _split_output(collector)
+            captured = _split_output(collector, self.config)
+            stdout = _append_result(captured.stdout, value, self.config)
+            stdout = _with_truncation_notice(stdout, captured, self.config)
             return REPLResult(
-                stdout=_append_result(stdout, value, self.config),
-                stderr=_bounded_text(stderr, self.config),
+                stdout=stdout,
+                stderr=_bounded_text(captured.stderr, self.config),
                 locals={},
                 execution_time=time.perf_counter() - started,
+                output_truncated=captured.truncated,
+                emitted_output_bytes=captured.emitted_bytes,
             )
         except MontyError as exc:
-            stdout, stderr = _split_output(collector)
-            if _is_terminal(exc):
+            captured = _split_output(collector, self.config)
+            terminal = _is_terminal(exc)
+            if terminal:
                 self._poisoned = True
                 await self.close()
             error = _error_text(exc)
+            failure_kind = _failure_kind(exc, error, self.config)
+            stdout = _with_truncation_notice(_bounded_text(captured.stdout, self.config), captured, self.config)
             return REPLResult(
-                stdout=_bounded_text(stdout, self.config),
-                stderr=_bounded_text(f"{stderr}\nError: {error}".lstrip(), self.config),
+                stdout=stdout,
+                stderr=_bounded_text(f"{captured.stderr}\nError: {error}".lstrip(), self.config),
                 locals={},
                 execution_time=time.perf_counter() - started,
                 success=False,
+                output_truncated=captured.truncated,
+                emitted_output_bytes=captured.emitted_bytes,
+                fatal=terminal,
+                failure_kind=failure_kind,
             )
 
     async def close(self) -> None:

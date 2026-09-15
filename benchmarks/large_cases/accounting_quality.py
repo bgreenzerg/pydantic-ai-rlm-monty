@@ -17,6 +17,7 @@ def accounting_domain_quality_error(answer: str, *, record_count: int) -> str | 
         return f"accounting dataset has {record_count}/{DATASET_SIZE} records"
     text = answer.lower().replace(",", ".").replace("−", "-").replace("–", "-").replace("\\%", "%")  # noqa: RUF001
     text = text.replace("*", "")
+    text = re.sub(r"\\text\{([^{}]*)\}", r" \1 ", text)
     # Accept equivalent presentation precision while retaining canonical truth
     # values for the question-specific checks below.
     text = re.sub(r"\b40\.0+\s*%", "40%", text)

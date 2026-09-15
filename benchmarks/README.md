@@ -87,6 +87,8 @@ provider requests, `execute_code`, and explicit nested `llm_query` spans.
 
 The first measured baseline is recorded in
 [`results/2026-09-15-large-cases.md`](results/2026-09-15-large-cases.md).
+The passing post-remediation runs and lifecycle measurements are recorded in
+[`results/2026-09-15-output-recovery.md`](results/2026-09-15-output-recovery.md).
 
 Run both cases and retain the report:
 

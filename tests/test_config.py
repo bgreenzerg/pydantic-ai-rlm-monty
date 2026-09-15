@@ -75,3 +75,13 @@ def test_binary_digest_must_be_canonical_sha256() -> None:
 def test_submodel_calls_cannot_exceed_suspension_budget() -> None:
     with pytest.raises(ValueError, match="max_submodel_calls"):
         RLMConfig(max_submodel_calls=2, max_suspensions=1)
+
+
+def test_hard_output_limit_cannot_be_smaller_than_soft_limit() -> None:
+    with pytest.raises(ValueError, match="max_emitted_output_bytes"):
+        RLMConfig(max_output_bytes=2048, max_emitted_output_bytes=1024)
+
+
+def test_arithmetic_validation_flag_must_be_boolean() -> None:
+    with pytest.raises(TypeError, match="validate_arithmetic"):
+        RLMConfig(validate_arithmetic="yes")  # type: ignore[arg-type]

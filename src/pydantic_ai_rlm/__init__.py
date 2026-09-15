@@ -10,9 +10,11 @@ from .prompts import (
 )
 from .repl import REPLEnvironment, REPLResult
 from .toolset import (
+    SandboxFatalError,
     cleanup_repl_environments,
     create_rlm_toolset,
 )
+from .validation import arithmetic_consistency_errors
 
 __all__ = [
     "GROUNDING_INSTRUCTIONS",
@@ -24,6 +26,8 @@ __all__ = [
     "REPLResult",
     "RLMConfig",
     "RLMDependencies",
+    "SandboxFatalError",
+    "arithmetic_consistency_errors",
     "build_rlm_instructions",
     "cleanup_repl_environments",
     "configure_logging",

@@ -164,6 +164,7 @@ def _case_config(model: str) -> RLMConfig:
         truncate_output_chars=10_000,
         max_context_bytes=5_000_000,
         max_output_bytes=10_000,
+        max_emitted_output_bytes=4 * 1024 * 1024,
         max_total_execution_seconds=240,
         max_suspensions=12,
         max_submodel_calls=3,
@@ -253,6 +254,10 @@ async def _execute_case(
         "peak_auxiliary_child_rss_mb": round(peaks["auxiliary"] / 1_000_000, 3),
         "peak_auxiliary_child_count": peaks["auxiliary_count"],
         "remaining_worker_count": remaining_workers,
+        "output_limits": {
+            "soft_return_bytes": config.max_output_bytes,
+            "hard_emitted_bytes": config.max_emitted_output_bytes,
+        },
     }
     if failure is not None or result is None:
         return {
@@ -294,6 +299,7 @@ async def _execute_case(
         "trajectory_errors": trajectory_errors,
         "execute_code_calls": execute_calls,
         "tool_execution_errors": sum("Errors:" in value or value.startswith("Error") for value in tool_returns),
+        "tool_output_truncations": sum("printed output safely truncated" in value for value in tool_returns),
         "tool_return_chars": tool_return_chars,
         "largest_tool_return_chars": max(map(len, tool_returns), default=0),
         "main_agent_requests": usage.requests,
@@ -481,12 +487,14 @@ def main() -> None:
         raise SystemExit(1) from None
 
     serialized = json.dumps(report, indent=2, ensure_ascii=False, default=str)
-    print(serialized)
     if args.output is not None:
         output = args.output.resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(serialized + "\n", encoding="utf-8")
         print(f"Report written to {output}", file=sys.stderr)
+    console_encoding = sys.stdout.encoding or "utf-8"
+    console_safe = serialized.encode(console_encoding, errors="backslashreplace").decode(console_encoding)
+    print(console_safe)
     if not report["suite_passed"]:
         raise SystemExit(2)
 
