@@ -24,6 +24,32 @@ before each run. This is a local engineering measurement, not a capacity
 claim. Repeat load and soak testing on the production OS, hardware, concurrency,
 context distribution and model-provider path.
 
+## Reproducible live synthetic suite
+
+`live_synthetic_suite.py` runs five deterministic synthetic workloads through
+the real main model, OpenRouter, and Monty sandbox:
+
+1. needle extraction from 2,000 log lines;
+2. exact aggregation of 700 transactions;
+3. persistent variables across three sandbox executions;
+4. semantic delegation through `llm_query`;
+5. cross-run isolation, host-environment denial, and prompt-injection resistance.
+
+The script derives the expected answers independently, checks every final answer,
+counts model and tool calls, samples parent/worker RSS, checks worker teardown,
+and prints a machine-readable JSON report. It loads the ignored `.env` file and
+requires `OPENROUTER_API_KEY` plus `ASSISTANT_MODEL`.
+
+```powershell
+.\.venv\Scripts\python.exe benchmarks\live_synthetic_suite.py `
+  --output benchmark-results\live-suite.json
+```
+
+The provider-reported token and cost totals currently cover main-agent requests
+only. Nested `llm_query` calls are counted, but their token usage and cost are not
+aggregated by the current implementation. Input data is synthetic, and credential
+values are checked for absence from captured tool output and final answers.
+
 ## Live OpenRouter integration
 
 `scripts/live_openrouter_smoke.py` completed successfully on 2026-09-15 using

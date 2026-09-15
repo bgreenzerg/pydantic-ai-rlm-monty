@@ -99,3 +99,4 @@ site/
 # Local development
 playground/
 *.local
+benchmark-results/
