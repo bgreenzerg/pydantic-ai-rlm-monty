@@ -69,6 +69,37 @@ only. Nested `llm_query` calls are counted, but their token usage and cost are n
 aggregated by the current implementation. Input data is synthetic, and credential
 values are checked for absence from captured tool output and final answers.
 
+## Imported large evaluation cases
+
+`live_large_cases.py` ports two deterministic workloads from the earlier local
+`pydantic-ai-rlm-harness/test-project` into this repository's current engine:
+
+| Case | Records | UTF-8 bytes | Integrity |
+|---|---:|---:|---|
+| Customer feedback | 5,000 | 1,557,639 | SHA-256 `aebfea7895c38ecace581a7feb69ee2b7e59677aa5df7db8645add9d1d75e915` |
+| Accounting/audit | 3,682 | 1,654,972 | SHA-256 `92a537609a9fb97251a98040c00479dce09bab9453abf6037c061fc671756d58` |
+
+The original business prompts, deterministic generators, and factual quality
+gates are retained. Generated JSONL is digest-checked before use and remains
+ignored under `benchmarks/large_cases/data/`. Every run is traced to the local
+MLflow experiment `pydantic-ai-rlm-large-benchmark`, including the main agent,
+provider requests, `execute_code`, and explicit nested `llm_query` spans.
+
+The first measured baseline is recorded in
+[`results/2026-09-15-large-cases.md`](results/2026-09-15-large-cases.md).
+
+Run both cases and retain the report:
+
+```powershell
+.\.venv\Scripts\python.exe benchmarks\live_large_cases.py `
+  --output benchmark-results\live-large-cases.json
+```
+
+Use `--case customer_feedback` or `--case accounting` to run one case. The
+quality gates validate factual conclusions, bounded tool/model trajectories,
+focused submodel exposure for feedback, worker cleanup, complete MLflow traces,
+and absence of the OpenRouter API key from outputs and serialized traces.
+
 ## Live OpenRouter integration
 
 `scripts/live_openrouter_smoke.py` completed successfully on 2026-09-15 using

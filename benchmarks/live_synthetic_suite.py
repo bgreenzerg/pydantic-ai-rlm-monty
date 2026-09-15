@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-import psutil
+import psutil  # type: ignore[import-untyped]
 from dotenv import load_dotenv
 from pydantic_ai import UsageLimits
 from pydantic_ai.messages import ToolCallPart, ToolReturnPart
