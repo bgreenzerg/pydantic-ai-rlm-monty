@@ -14,7 +14,7 @@ from .toolset import (
     cleanup_repl_environments,
     create_rlm_toolset,
 )
-from .validation import arithmetic_consistency_errors
+from .validation import arithmetic_consistency_errors, grounding_consistency_errors
 
 __all__ = [
     "GROUNDING_INSTRUCTIONS",
@@ -33,8 +33,9 @@ __all__ = [
     "configure_logging",
     "create_rlm_agent",
     "create_rlm_toolset",
+    "grounding_consistency_errors",
     "run_rlm_analysis",
     "run_rlm_analysis_sync",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"

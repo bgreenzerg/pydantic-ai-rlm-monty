@@ -1,5 +1,26 @@
 # Sandbox lifecycle benchmark
 
+## Release-to-release comparison
+
+`compare_release_performance.py` checks the current working tree against a Git
+baseline using the same Python interpreter, dependency environment and machine.
+It benchmarks both active sandbox lifecycle and agent runs that do not call the
+sandbox, then enforces worker-leak, active-latency and lazy-worker gates.
+
+```powershell
+.\.venv\Scripts\python.exe benchmarks\compare_release_performance.py `
+  --baseline-ref d5de13d --iterations 40 --context-bytes 1048576 `
+  --output benchmark-results\release-performance.json
+```
+
+The baseline source is read through `git archive` into a temporary directory;
+the repository and baseline commit are not modified. RSS values are sampled and
+reported, but are deliberately not a pass/fail gate because short-process RSS is
+noisy. The JSON report includes exact commit IDs and whether the candidate tree
+contained uncommitted changes.
+
+## Single-version lifecycle measurement
+
 Command run on the Windows development workstation on 2026-09-15:
 
 ```powershell

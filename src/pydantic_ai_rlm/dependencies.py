@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import json
 import math
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 ContextType = str | dict[str, Any] | list[Any]
 
@@ -50,6 +52,9 @@ class RLMConfig:
     validate_arithmetic: bool = True
     """Reject final answers containing internally inconsistent simple equations."""
 
+    require_code_execution: bool = True
+    """Require at least one successful sandbox execution before accepting an answer."""
+
     max_memory_bytes: int = 256 * 1024 * 1024
     """Maximum Monty worker heap allocation."""
 
@@ -84,6 +89,8 @@ class RLMConfig:
         """Reject unbounded or otherwise invalid resource settings."""
         if not isinstance(self.validate_arithmetic, bool):
             raise TypeError("validate_arithmetic must be a boolean")
+        if not isinstance(self.require_code_execution, bool):
+            raise TypeError("require_code_execution must be a boolean")
         positive_integers = {
             "truncate_output_chars": self.truncate_output_chars,
             "max_context_bytes": self.max_context_bytes,
@@ -169,9 +176,9 @@ class RLMConfig:
         In particular, arbitrary Python objects (which could retain host
         capabilities) are rejected instead of being stringified.
         """
-        if not isinstance(context, (str, dict, list)):
+        if type(context) not in (str, dict, list):
             raise TypeError("context must be a string, dict, or list")
-        if isinstance(context, str):
+        if type(context) is str:
             size = len(context.encode("utf-8"))
             safe_context: ContextType = context
         else:
@@ -180,11 +187,8 @@ class RLMConfig:
                 max_depth=self.max_context_depth,
                 max_items=self.max_context_items,
             )
-            try:
-                serialized = json.dumps(context, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
-            except (TypeError, ValueError) as exc:
-                raise ValueError("context must contain only JSON-compatible values") from exc
-            size = len(serialized.encode("utf-8"))
+            structured = cast(dict[str, Any] | list[Any], context)
+            serialized, size = _bounded_json(structured, self)
             safe_context = json.loads(serialized)
         if size > self.max_context_bytes:
             raise ValueError(f"context exceeds max_context_bytes ({self.max_context_bytes})")
@@ -221,32 +225,57 @@ class RLMDependencies:
 
 def _validate_context_value(value: Any, *, max_depth: int, max_items: int) -> None:  # noqa: C901
     """Iteratively validate a JSON tree without risking host recursion."""
-    stack: list[tuple[Any, str, int]] = [(value, "context", 0)]
+    stack: list[Iterator[tuple[Any, str, int]]] = [iter(((value, "context", 0),))]
     seen_containers: set[int] = set()
     item_count = 0
     while stack:
-        item, path, depth = stack.pop()
+        try:
+            item, path, depth = next(stack[-1])
+        except StopIteration:
+            stack.pop()
+            continue
         item_count += 1
         if item_count > max_items:
             raise ValueError(f"context exceeds max_context_items ({max_items})")
-        if item is None or isinstance(item, (str, bool, int)):
+        item_type = type(item)
+        if item is None or item_type in (str, bool, int):
             continue
-        if isinstance(item, float):
+        if item_type is float:
             if not math.isfinite(item):
                 raise ValueError(f"{path} contains a non-finite float")
             continue
-        if not isinstance(item, (list, dict)):
-            raise TypeError(f"{path} contains unsupported value type {type(item).__name__}")
+        if item_type not in (list, dict):
+            raise TypeError(f"{path} contains unsupported value type {item_type.__name__}")
         if depth >= max_depth:
             raise ValueError(f"context exceeds max_context_depth ({max_depth})")
         identity = id(item)
         if identity in seen_containers:
             raise ValueError(f"{path} contains a cyclic or shared container")
         seen_containers.add(identity)
-        if isinstance(item, list):
-            stack.extend((child, f"{path}[{index}]", depth + 1) for index, child in enumerate(item))
+        if item_type is list:
+            stack.append(((child, f"{path}[{index}]", depth + 1) for index, child in enumerate(item)))
         else:
-            for key, child in item.items():
-                if not isinstance(key, str):
+            for key in item:
+                if type(key) is not str:
                     raise TypeError(f"{path} keys must be strings")
-                stack.append((child, f"{path}.{key}", depth + 1))
+            stack.append((item[key], f"{path}.{key}", depth + 1) for key in item)
+
+
+def _bounded_json(context: dict[str, Any] | list[Any], config: RLMConfig) -> tuple[str, int]:
+    """Serialize a validated tree while stopping at the configured byte budget."""
+    encoder = json.JSONEncoder(ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    buffer = io.StringIO()
+    size = 0
+    try:
+        for chunk in encoder.iterencode(context):
+            size += len(chunk.encode("utf-8"))
+            if size > config.max_context_bytes:
+                raise ValueError(f"context exceeds max_context_bytes ({config.max_context_bytes})")
+            if size > config.max_memory_bytes // 4:
+                raise ValueError("encoded context cannot exceed one quarter of max_memory_bytes")
+            buffer.write(chunk)
+    except (TypeError, OverflowError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith(("context exceeds", "encoded context")):
+            raise
+        raise ValueError("context must contain only JSON-compatible values") from exc
+    return buffer.getvalue(), size

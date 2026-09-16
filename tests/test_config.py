@@ -85,3 +85,26 @@ def test_hard_output_limit_cannot_be_smaller_than_soft_limit() -> None:
 def test_arithmetic_validation_flag_must_be_boolean() -> None:
     with pytest.raises(TypeError, match="validate_arithmetic"):
         RLMConfig(validate_arithmetic="yes")  # type: ignore[arg-type]
+
+
+def test_code_execution_requirement_must_be_boolean() -> None:
+    with pytest.raises(TypeError, match="require_code_execution"):
+        RLMConfig(require_code_execution="yes")  # type: ignore[arg-type]
+
+
+def test_context_rejects_container_and_scalar_subclasses() -> None:
+    class HostList(list[object]):
+        pass
+
+    class HostString(str):
+        pass
+
+    with pytest.raises(TypeError, match="context must be"):
+        RLMDependencies(context=HostList())  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="unsupported value type"):
+        RLMDependencies(context=[HostString("secret")])
+
+
+def test_encoded_context_stops_at_configured_budget() -> None:
+    with pytest.raises(ValueError, match="max_context_bytes"):
+        RLMDependencies(context=["x" * 10_000], config=RLMConfig(max_context_bytes=100))

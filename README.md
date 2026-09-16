@@ -223,6 +223,10 @@ print(result.grounding)
 # {"1": "by 45% year-over-year", "2": "expansion into Asian markets"}
 ```
 
+Grounded output is validated before it is returned: markers and keys must match,
+keys must be consecutive from `1`, and every 10–200 character quote must occur
+verbatim in the supplied context. Invalid grounding triggers an output retry.
+
 ---
 
 ## API Reference
@@ -235,7 +239,7 @@ Create a Pydantic AI agent with RLM capabilities.
 agent = create_rlm_agent(
     model="openai:gpt-5",           # Main model for orchestration
     sub_model="openai:gpt-5-mini",  # Model for llm_query() (optional)
-    code_timeout=60.0,               # Timeout for code execution
+    code_timeout=None,               # None uses RLMDependencies.config.code_timeout
     custom_instructions="...",       # Additional instructions
     grounded=True,                   # Return GroundedResponse with citations
 )
@@ -282,6 +286,7 @@ deps = RLMDependencies(
         max_output_bytes=50_000,             # Soft output retained for the model
         max_emitted_output_bytes=4 * 1024 * 1024,  # Hard per-snippet flood limit
         validate_arithmetic=True,            # Retry inconsistent simple equations
+        require_code_execution=True,         # Require successful sandbox evidence
         sub_model="openai:gpt-5-mini",
     ),
 )
@@ -357,6 +362,10 @@ invalidates the complete agent run; callers receive `SandboxFatalError` instead
 of an apparently successful answer. Retry such a request only as a new run with
 a fresh sandbox and the original immutable input.
 
+By default, a final answer is accepted only after at least one successful
+`execute_code` result in that run. A failed snippet does not count. Set
+`require_code_execution=False` only for an intentional non-RLM use case.
+
 Final string answers also receive a bounded deterministic consistency check for
 simple arithmetic equations. It parses only numeric arithmetic into a restricted
 AST and evaluates with `Decimal`; model text is never executed. An inconsistent
@@ -364,10 +373,11 @@ equation triggers a Pydantic output retry. This catches transcription mistakes,
 but it is not a substitute for domain-specific validation of source selection,
 formulas, or conclusions.
 
-Each run gets a newly spawned worker that is destroyed at run completion. The
-sandbox has no filesystem mounts, environment variables, sockets, subprocesses,
-or ambient host objects. `llm_query()` is the only optional egress path and is
-absent unless a sub-model is explicitly configured.
+A worker is started lazily on the first `execute_code` call and destroyed at run
+completion. Runs that never execute code consume no worker slot. The sandbox has
+no filesystem mounts, environment variables, sockets, subprocesses, or ambient
+host objects. `llm_query()` is the only optional egress path and is absent unless
+a sub-model is explicitly configured.
 
 Resource limits are finite by default. Production deployments should pin the
 Monty executable with `RLMConfig(monty_binary_path=..., monty_binary_sha256=...)`

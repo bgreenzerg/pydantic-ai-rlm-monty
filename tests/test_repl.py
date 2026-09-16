@@ -75,6 +75,48 @@ def test_large_output_is_truncated_without_losing_session_state() -> None:
     repl.close()
 
 
+def test_large_final_expression_is_bounded_before_host_return() -> None:
+    config = RLMConfig(max_output_bytes=1024, max_emitted_output_bytes=8192, truncate_output_chars=1024)
+    with REPLEnvironment("x", config) as repl:
+        result = repl.execute("'x' * 4096")
+
+    assert result.success
+    assert result.output_truncated
+    assert len(result.stdout.encode("utf-8")) <= config.max_output_bytes
+
+
+def test_large_exception_is_bounded_and_session_remains_usable() -> None:
+    config = RLMConfig(max_output_bytes=1024, max_emitted_output_bytes=8192, truncate_output_chars=1024)
+    with REPLEnvironment("x", config) as repl:
+        result = repl.execute("raise ValueError('x' * 100_000)")
+        follow_up = repl.execute("40 + 2")
+
+    assert not result.success
+    assert not result.fatal
+    assert len(result.stderr.encode("utf-8")) <= config.max_output_bytes
+    assert follow_up.stdout == "42\n"
+
+
+def test_syntax_error_does_not_discard_first_context_feed() -> None:
+    with REPLEnvironment("still-available") as repl:
+        invalid = repl.execute("if")
+        valid = repl.execute("context")
+
+    assert not invalid.success
+    assert invalid.failure_kind == "code_error"
+    assert valid.stdout == "'still-available'\n"
+
+
+def test_oversized_llm_query_prompt_is_rejected_inside_sandbox() -> None:
+    config = RLMConfig(sub_model="openai:not-called", max_submodel_prompt_bytes=32)
+    with REPLEnvironment("x", config) as repl:
+        result = repl.execute("llm_query('x' * 1000)")
+
+    assert not result.success
+    assert "configured limit" in result.stderr
+    assert repl._submodel_calls == 0
+
+
 def test_output_flood_is_fatal_only_at_hard_limit() -> None:
     config = RLMConfig(max_output_bytes=1024, max_emitted_output_bytes=2048, truncate_output_chars=1024)
     repl = REPLEnvironment("x", config)

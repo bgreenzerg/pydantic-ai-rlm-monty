@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import replace
 from typing import Any
 
-from pydantic_ai import RunContext
+from pydantic_ai import RunContext, ToolReturn
 from pydantic_ai.toolsets import FunctionToolset
 
 from .dependencies import RLMConfig, RLMDependencies
@@ -63,7 +63,7 @@ class SandboxFatalError(RuntimeError):
 
 def create_rlm_toolset(
     *,
-    code_timeout: float = 60.0,
+    code_timeout: float | None = None,
     sub_model: str | None = None,
     toolset_id: str | None = None,
 ) -> FunctionToolset[RLMDependencies]:
@@ -73,7 +73,8 @@ def create_rlm_toolset(
     run Python code with access to a `context` variable containing data to analyze.
 
     Args:
-        code_timeout: Timeout in seconds for code execution. Defaults to 60.0.
+        code_timeout: Optional timeout override. By default, each run uses its
+            ``RLMDependencies.config.code_timeout`` value.
         sub_model: Model to use for llm_query() within the REPL environment.
         toolset_id: Optional unique identifier for the toolset.
 
@@ -117,7 +118,7 @@ def create_rlm_toolset(
         # Tool will be named 'rlm_execute_code'
         ```
     """
-    if code_timeout <= 0 or code_timeout > 300:
+    if code_timeout is not None and (code_timeout <= 0 or code_timeout > 300):
         raise ValueError("code_timeout must be greater than zero and at most 300 seconds")
     return MontyRLMToolset(
         code_timeout=code_timeout,
@@ -132,7 +133,7 @@ class MontyRLMToolset(FunctionToolset[RLMDependencies]):
     def __init__(
         self,
         *,
-        code_timeout: float,
+        code_timeout: float | None,
         sub_model: str | None,
         toolset_id: str | None,
     ) -> None:
@@ -141,7 +142,9 @@ class MontyRLMToolset(FunctionToolset[RLMDependencies]):
         self._sub_model = sub_model
 
     async def for_run(self, ctx: RunContext[RLMDependencies]) -> FunctionToolset[RLMDependencies]:
-        config = replace(ctx.deps.config, code_timeout=self._code_timeout)
+        config = replace(ctx.deps.config)
+        if self._code_timeout is not None:
+            config = replace(config, code_timeout=self._code_timeout)
         if self._sub_model and not config.sub_model:
             config = replace(config, sub_model=self._sub_model)
         return _RunMontyRLMToolset(
@@ -159,42 +162,44 @@ class _RunMontyRLMToolset(FunctionToolset[RLMDependencies]):
         self._context = context
         self._config = config
         self._repl: AsyncREPLEnvironment | None = None
+        self._active = False
 
         @self.tool(description=EXECUTE_CODE_DESCRIPTION, sequential=True)
-        async def execute_code(ctx: RunContext[RLMDependencies], code: str) -> str:
+        async def execute_code(ctx: RunContext[RLMDependencies], code: str) -> ToolReturn:
             del ctx
             return await self._execute_code(code)
 
     async def __aenter__(self) -> _RunMontyRLMToolset:
-        if self._repl is not None:
+        if self._active:
             raise RuntimeError("sandbox session is already active")
-        context = self._context
-        if context is None:
-            raise SandboxFatalError("sandbox context is unavailable; agent run is invalid")
-        repl = AsyncREPLEnvironment(context, self._config)
-        try:
-            await repl.open()
-        except BaseException:
-            # Do not retain tenant data when startup fails or is cancelled.
-            self._context = None
-            await repl.close()
-            raise
-        self._repl = repl
-        # The validated context now belongs only to the environment/session.
-        self._context = None
+        self._active = True
         return self
 
     async def __aexit__(self, *args: object) -> bool | None:
+        self._active = False
         repl, self._repl = self._repl, None
         if repl is not None:
             await repl.close()
         self._context = None
         return None
 
-    async def _execute_code(self, code: str) -> str:
+    async def _execute_code(self, code: str) -> ToolReturn:
+        if not self._active:
+            raise SandboxFatalError("sandbox session is not active; agent run is invalid")
         repl = self._repl
         if repl is None:
-            raise SandboxFatalError("sandbox session is not active; agent run is invalid")
+            context = self._context
+            if context is None:
+                raise SandboxFatalError("sandbox session is not active; agent run is invalid")
+            repl = AsyncREPLEnvironment(context, self._config, _validated_context=True)
+            try:
+                await repl.open()
+            except BaseException:
+                self._context = None
+                await repl.close()
+                raise
+            self._repl = repl
+            self._context = None
         logger = get_logger()
         logger.log_code_execution(code)
         try:
@@ -222,7 +227,15 @@ class _RunMontyRLMToolset(FunctionToolset[RLMDependencies]):
             self._repl = None
             kind = result.failure_kind or "unknown"
             raise SandboxFatalError(f"sandbox terminated ({kind}); agent run is invalid")
-        return format_repl_result(result)
+        return ToolReturn(
+            format_repl_result(result),
+            metadata={
+                "pydantic_ai_rlm": {
+                    "success": result.success,
+                    "output_truncated": result.output_truncated,
+                }
+            },
+        )
 
 
 def cleanup_repl_environments() -> None:
