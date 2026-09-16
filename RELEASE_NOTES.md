@@ -66,7 +66,7 @@ Final local results on 2026-09-16:
   agent/provider span.
 
 The clean-commit release-to-release performance gate passed 40 iterations with
-1 MiB context per run. Active sandbox p95 was effectively unchanged at +0.42%,
-while no-tool p50 improved from 47.780 ms to 5.707 ms (−88.06%) and peak Monty
-workers fell from one to zero. See
+1 MiB context per run. Active sandbox p50/p95 improved by 10.03%/0.64%, while
+no-tool p50 improved from 46.629 ms to 3.941 ms (−91.55%) and peak Monty workers
+fell from one to zero. See
 [`benchmarks/results/2026-09-16-release-hardening.md`](benchmarks/results/2026-09-16-release-hardening.md).
