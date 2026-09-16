@@ -8,8 +8,11 @@ from pydantic_ai_rlm import RLMConfig, configure_logging
 
 def test_upstream_prompts_are_byte_identical() -> None:
     prompts = Path(__file__).parents[1] / "src" / "pydantic_ai_rlm" / "prompts.py"
-    digest = hashlib.sha256(prompts.read_bytes()).hexdigest()
-    assert digest == "3be7a348f185658339c68133192ad4d35331b271eaaae4a6e8737bcdc10b8885"
+    # Git may materialize CRLF in a Windows worktree even though the repository,
+    # source distribution, and upstream blob all contain LF line endings.
+    canonical_bytes = prompts.read_text(encoding="utf-8").encode("utf-8")
+    digest = hashlib.sha256(canonical_bytes).hexdigest()
+    assert digest == "be87fcb582561b80a12d1e5c109781f31d2878e0ddab25bbca81cf812d2f7886"
 
 
 def test_logging_redacts_content_by_default(capsys) -> None:
