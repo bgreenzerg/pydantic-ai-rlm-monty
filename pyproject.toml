@@ -1,6 +1,6 @@
 [project]
 name = "pydantic-ai-rlm"
-version = "0.2.0"
+version = "0.2.1"
 description = "Monty-sandboxed Recursive Language Model toolset for Pydantic AI"
 readme = "README.md"
 license = "MIT"
@@ -28,7 +28,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "pydantic-ai-slim[cli]>=2.43.0,<2.44.0",
+    "pydantic-ai-slim[openai]>=2.43.0,<2.44.0",
     "pydantic-monty>=0.0.22,<0.0.23",
 ]
 
@@ -47,6 +47,9 @@ logging = ["rich>=13.0"]
 openrouter = [
     "pydantic-ai-slim[openai]>=2.43.0,<2.44.0",
     "python-dotenv>=1.1,<2",
+]
+observability = [
+    "mlflow-skinny>=3.15,<3.17",
 ]
 
 [build-system]

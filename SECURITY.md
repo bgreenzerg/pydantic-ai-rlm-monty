@@ -29,15 +29,35 @@ files and container or VM isolation appropriate to its threat model.
 - No filesystem mount, host object, environment, socket, subprocess or OS
   callback is exposed to generated code.
 - The only optional external callback is `llm_query`; it has call-count, prompt,
-  response, provider timeout, token and suspension limits.
+  response, provider timeout, token and suspension limits. Prompt size is checked
+  inside Monty before the value can cross the worker/host boundary.
 - Context accepts only bounded JSON-like trees or strings. Structured input is
-  serialized and reconstructed before use so mutable host objects are detached.
-- Code, output, context, memory, recursion, cumulative execution time, checkout
-  time and concurrent worker count are bounded.
-- A memory limit, execution limit, output overflow or worker crash poisons the
-  session; it is closed rather than reused.
-- Tool calls within a run are sequential. Each run receives a new worker, and
-  `__aexit__` performs deterministic cleanup even when a request is cancelled.
+  serialized under a streaming byte budget and reconstructed before use so
+  mutable host objects are detached. Exact built-in types are required; hostile
+  container subclasses are rejected without invoking their conversion hooks.
+- Code, context, memory, recursion, cumulative execution time, checkout time and
+  concurrent worker count are bounded. Printed output has a smaller soft return
+  budget and a separate finite hard emission budget.
+- Crossing the soft output budget discards excess bytes and reports truncation
+  without destroying persistent REPL state. A hard output flood, memory limit,
+  terminal execution limit or worker crash poisons and closes the session.
+- Final expression values and exception messages are converted to bounded output
+  inside Monty. They cannot bypass output controls through the worker protocol.
+- The initial context transfer is a separate safe feed. A syntax error in the
+  model's first snippet therefore cannot discard context before it is loaded.
+- Fatal sandbox conditions propagate as `SandboxFatalError`, invalidating the
+  complete agent run instead of allowing the model to return an unsupported
+  normal answer. Any retry must start a new run and worker from immutable input.
+- Final answers are checked for internally contradictory simple numeric
+  equations by a restricted AST/`Decimal` parser. The validator never executes
+  model text, has bounded linear scanning and AST limits, and requests a corrected
+  model response when it finds a mismatch.
+- A final answer requires a successful `execute_code` result by default; ordinary
+  code failures do not satisfy this evidence gate. Grounded responses additionally
+  require exact source quotes and consistent consecutive citation markers.
+- Tool calls within a run are sequential. A new worker is created lazily on the
+  first code call, and `__aexit__` performs deterministic cleanup even when a
+  request is cancelled. Runs without code calls consume no worker capacity.
 - The process-wide worker ceiling is four, limiting worst-case native worker
   memory. Scale out with service processes after capacity testing instead of
   increasing untrusted-code concurrency casually.
@@ -65,8 +85,11 @@ multi-tenant regulated workloads:
 - Verbose logging emitted generated code, tool results and sub-model content.
 
 The replacement has no global session registry and owns all tenant state inside
-the run-scoped toolset and its one-use worker. Host references to context are
-cleared on first feed and on every close path.
+the run-scoped toolset and its one-use worker. Validated context is not copied a
+second time when handed to the sandbox environment. The environment's reference
+is cleared after the first successful feed and on every close path. The one
+run-scoped dependency reference remains only until final-output validation (where
+grounding quotes are checked), then becomes collectible with the run.
 
 ## Production deployment requirements
 
@@ -88,6 +111,10 @@ Before production approval:
 8. Re-review every Pydantic AI or Monty update. The narrow dependency bounds are
    intentional; do not auto-upgrade the sandbox runtime without validation.
 
+The arithmetic validator is defence in depth, not a general factual verifier.
+Regulated workflows must additionally validate task-specific invariants and
+source provenance before committing financial or operational decisions.
+
 Prefer the async agent API for production requests. The sync compatibility API
 passes a provider timeout, but a non-conforming provider implementation cannot be
 forcibly stopped safely inside the caller's Python thread; enforce an outer
@@ -95,11 +122,10 @@ service-process deadline if sync sub-model calls are unavoidable.
 
 ## Validation snapshot
 
-On 2026-09-15, the local branch passed its unit, adversarial, concurrency and
-end-to-end agent tests, Ruff, mypy, Bandit, and `pip-audit`. A live synthetic
-OpenRouter workload also exercised repeated Monty tool calls and two nested
-sub-model callbacks. The lifecycle benchmark and live results are reproducible
-from the scripts linked in [benchmarks/README.md](benchmarks/README.md).
+The release validation date, checks, live workloads, trace IDs and measured
+resource use for version 0.2.1 are recorded in [RELEASE_NOTES.md](RELEASE_NOTES.md).
+The lifecycle benchmark and live results are reproducible from the scripts linked
+in [benchmarks/README.md](benchmarks/README.md).
 
 These results support engineering review; they are not certification, a formal
 penetration test, or an authorization to process central-bank data.

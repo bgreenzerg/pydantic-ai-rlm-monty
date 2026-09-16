@@ -99,3 +99,5 @@ site/
 # Local development
 playground/
 *.local
+benchmark-results/
+benchmarks/large_cases/data/

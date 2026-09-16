@@ -61,12 +61,120 @@ def test_code_size_is_bounded() -> None:
         repl.execute("print('too large')")
 
 
-def test_output_bomb_poisoned_session() -> None:
-    config = RLMConfig(max_output_bytes=1024, truncate_output_chars=1024)
+def test_large_output_is_truncated_without_losing_session_state() -> None:
+    config = RLMConfig(max_output_bytes=1024, max_emitted_output_bytes=8192, truncate_output_chars=1024)
+    repl = REPLEnvironment("x", config)
+    result = repl.execute("saved = 42\nprint('x' * 4096)")
+
+    assert result.success
+    assert result.output_truncated
+    assert result.emitted_output_bytes == 4097
+    assert "printed output safely truncated" in result.stdout
+    assert len(result.stdout.encode("utf-8")) <= config.max_output_bytes
+    assert repl.execute("saved + 1").stdout == "43\n"
+    repl.close()
+
+
+def test_large_final_expression_is_bounded_before_host_return() -> None:
+    config = RLMConfig(max_output_bytes=1024, max_emitted_output_bytes=8192, truncate_output_chars=1024)
+    with REPLEnvironment("x", config) as repl:
+        result = repl.execute("'x' * 4096")
+
+    assert result.success
+    assert result.output_truncated
+    assert len(result.stdout.encode("utf-8")) <= config.max_output_bytes
+
+
+def test_large_exception_is_bounded_and_session_remains_usable() -> None:
+    config = RLMConfig(max_output_bytes=1024, max_emitted_output_bytes=8192, truncate_output_chars=1024)
+    with REPLEnvironment("x", config) as repl:
+        result = repl.execute("raise ValueError('x' * 100_000)")
+        follow_up = repl.execute("40 + 2")
+
+    assert not result.success
+    assert not result.fatal
+    assert len(result.stderr.encode("utf-8")) <= config.max_output_bytes
+    assert follow_up.stdout == "42\n"
+
+
+def test_syntax_error_does_not_discard_first_context_feed() -> None:
+    with REPLEnvironment("still-available") as repl:
+        invalid = repl.execute("if")
+        valid = repl.execute("context")
+
+    assert not invalid.success
+    assert invalid.failure_kind == "code_error"
+    assert valid.stdout == "'still-available'\n"
+
+
+def test_oversized_llm_query_prompt_is_rejected_inside_sandbox() -> None:
+    config = RLMConfig(sub_model="openai:not-called", max_submodel_prompt_bytes=32)
+    with REPLEnvironment("x", config) as repl:
+        result = repl.execute("llm_query('x' * 1000)")
+
+    assert not result.success
+    assert "configured limit" in result.stderr
+    assert repl._submodel_calls == 0
+
+
+def test_sync_llm_query_survives_sandbox_exception_wrapper() -> None:
+    calls: list[str] = []
+    with REPLEnvironment("x", RLMConfig(sub_model="fake:model")) as repl:
+        repl._llm_query = lambda prompt: calls.append(prompt) or "sync-ok"  # type: ignore[method-assign]
+        result = repl.execute("llm_query('bounded evidence')")
+
+    assert result.success
+    assert result.stdout == "'sync-ok'\n"
+    assert calls == ["bounded evidence"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["llm_query('bounded evidence')", "await llm_query('bounded evidence')"])
+async def test_async_llm_query_survives_sandbox_exception_wrapper(code: str) -> None:
+    calls: list[str] = []
+
+    async def fake_query(prompt: str) -> str:
+        await asyncio.sleep(0.02)
+        calls.append(prompt)
+        return "async-ok"
+
+    async with AsyncREPLEnvironment("x", RLMConfig(sub_model="fake:model")) as repl:
+        repl._llm_query = fake_query  # type: ignore[method-assign]
+        result = await repl.execute(code)
+
+    assert result.success
+    assert result.stdout == "'async-ok'\n"
+    assert calls == ["bounded evidence"]
+
+
+@pytest.mark.asyncio
+async def test_async_llm_query_failure_is_bounded_and_not_detached() -> None:
+    calls: list[str] = []
+
+    async def failing_query(prompt: str) -> str:
+        await asyncio.sleep(0.02)
+        calls.append(prompt)
+        raise RuntimeError("x" * 100_000)
+
+    config = RLMConfig(sub_model="fake:model", max_output_bytes=1024, truncate_output_chars=1024)
+    async with AsyncREPLEnvironment("x", config) as repl:
+        repl._llm_query = failing_query  # type: ignore[method-assign]
+        result = await repl.execute("llm_query('bounded evidence')")
+
+    assert not result.success
+    assert not result.fatal
+    assert len(result.stderr.encode("utf-8")) <= config.max_output_bytes
+    assert calls == ["bounded evidence"]
+
+
+def test_output_flood_is_fatal_only_at_hard_limit() -> None:
+    config = RLMConfig(max_output_bytes=1024, max_emitted_output_bytes=2048, truncate_output_chars=1024)
     repl = REPLEnvironment("x", config)
     result = repl.execute("print('x' * 4096)")
 
     assert not result.success
+    assert result.fatal
+    assert result.failure_kind == "output_flood"
     assert "MemoryError" in result.stderr
     with pytest.raises(RuntimeError, match="closed or unusable"):
         repl.execute("1 + 1")
@@ -95,6 +203,8 @@ def test_timeout_poisoned_session() -> None:
     result = repl.execute("while True:\n    pass")
 
     assert not result.success
+    assert result.fatal
+    assert result.failure_kind == "execution_timeout"
     assert "TimeoutError" in result.stderr
     with pytest.raises(RuntimeError, match="closed or unusable"):
         repl.execute("1 + 1")
@@ -116,6 +226,18 @@ async def test_concurrent_tenants_are_isolated() -> None:
         for other in range(6):
             if other != index:
                 assert f"tenant-{other}-sentinel" not in output
+
+
+@pytest.mark.asyncio
+async def test_async_large_output_is_truncated_without_losing_session_state() -> None:
+    config = RLMConfig(max_output_bytes=1024, max_emitted_output_bytes=8192, truncate_output_chars=1024)
+    async with AsyncREPLEnvironment("x", config) as repl:
+        result = await repl.execute("saved = 42\nprint('x' * 4096)")
+
+        assert result.success
+        assert result.output_truncated
+        assert "printed output safely truncated" in result.stdout
+        assert (await repl.execute("saved + 1")).stdout == "43\n"
 
 
 @pytest.mark.asyncio

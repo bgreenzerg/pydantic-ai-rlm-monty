@@ -73,7 +73,11 @@ class RLMLogger:
                 f"Code execution result: success={result.success}, "
                 f"duration={result.execution_time:.3f}s, "
                 f"stdout_bytes={len(result.stdout.encode('utf-8'))}, "
-                f"stderr_bytes={len(result.stderr.encode('utf-8'))}"
+                f"stderr_bytes={len(result.stderr.encode('utf-8'))}, "
+                f"emitted_output_bytes={result.emitted_output_bytes}, "
+                f"output_truncated={result.output_truncated}, "
+                f"fatal={result.fatal}, "
+                f"failure_kind={result.failure_kind or 'none'}"
             )
             if RICH_AVAILABLE and self.console:
                 self.console.print(message)
