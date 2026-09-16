@@ -49,8 +49,8 @@ both large synthetic OpenRouter workloads with local MLflow trace read-back.
 Exact commands and final results are filled in from the release branch before the
 pull request is merged.
 
-The local release-to-release performance gate passed 40 iterations with 1 MiB
-context per run. Active sandbox p95 improved from 48.991 ms to 48.112 ms, while
-no-tool p50 improved from 47.526 ms to 7.306 ms and peak Monty workers fell from
-one to zero. See
+The clean-commit release-to-release performance gate passed 40 iterations with
+1 MiB context per run. Active sandbox p95 was effectively unchanged at +0.42%,
+while no-tool p50 improved from 47.780 ms to 5.707 ms (−88.06%) and peak Monty
+workers fell from one to zero. See
 [`benchmarks/results/2026-09-16-release-hardening.md`](benchmarks/results/2026-09-16-release-hardening.md).

@@ -117,6 +117,35 @@ def test_oversized_llm_query_prompt_is_rejected_inside_sandbox() -> None:
     assert repl._submodel_calls == 0
 
 
+def test_sync_llm_query_survives_sandbox_exception_wrapper() -> None:
+    calls: list[str] = []
+    with REPLEnvironment("x", RLMConfig(sub_model="fake:model")) as repl:
+        repl._llm_query = lambda prompt: calls.append(prompt) or "sync-ok"  # type: ignore[method-assign]
+        result = repl.execute("llm_query('bounded evidence')")
+
+    assert result.success
+    assert result.stdout == "'sync-ok'\n"
+    assert calls == ["bounded evidence"]
+
+
+@pytest.mark.asyncio
+async def test_async_llm_query_survives_sandbox_exception_wrapper() -> None:
+    calls: list[str] = []
+
+    async def fake_query(prompt: str) -> str:
+        await asyncio.sleep(0)
+        calls.append(prompt)
+        return "async-ok"
+
+    async with AsyncREPLEnvironment("x", RLMConfig(sub_model="fake:model")) as repl:
+        repl._llm_query = fake_query  # type: ignore[method-assign]
+        result = await repl.execute("await llm_query('bounded evidence')")
+
+    assert result.success
+    assert result.stdout == "'async-ok'\n"
+    assert calls == ["bounded evidence"]
+
+
 def test_output_flood_is_fatal_only_at_hard_limit() -> None:
     config = RLMConfig(max_output_bytes=1024, max_emitted_output_bytes=2048, truncate_output_chars=1024)
     repl = REPLEnvironment("x", config)

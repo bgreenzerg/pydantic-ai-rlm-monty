@@ -163,6 +163,34 @@ def _validate_code(code: str, config: RLMConfig) -> str:
     return normalized
 
 
+class _LLMQueryTransformer(ast.NodeTransformer):
+    """Keep external calls direct while validating their argument in Monty."""
+
+    def __init__(self, *, external_name: str, validator_name: str) -> None:
+        self._external_name = external_name
+        self._validator_name = validator_name
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        if not (isinstance(node.func, ast.Name) and node.func.id == "llm_query"):
+            return self.generic_visit(node)
+        if len(node.args) != 1 or node.keywords:
+            return self.generic_visit(node)
+        prompt = self.visit(node.args[0])
+        validated_prompt = ast.Call(
+            func=ast.Name(id=self._validator_name, ctx=ast.Load()),
+            args=[prompt],
+            keywords=[],
+        )
+        return ast.copy_location(
+            ast.Call(
+                func=ast.Name(id=self._external_name, ctx=ast.Load()),
+                args=[validated_prompt],
+                keywords=[],
+            ),
+            node,
+        )
+
+
 def _prepare_sandbox_code(code: str, config: RLMConfig, *, token: str, external_name: str | None) -> str:
     """Parse and wrap model code so no unbounded value or exception crosses IPC."""
     normalized = _validate_code(code, config)
@@ -170,13 +198,16 @@ def _prepare_sandbox_code(code: str, config: RLMConfig, *, token: str, external_
     body = list(tree.body)
 
     if external_name is not None:
+        validator_name = f"__rlm_validate_prompt_{token}"
+        tree = _LLMQueryTransformer(external_name=external_name, validator_name=validator_name).visit(tree)
+        body = list(tree.body)
         wrapper = ast.parse(
-            "def llm_query(prompt):\n"
+            f"def {validator_name}(prompt):\n"
             "    if not isinstance(prompt, str):\n"
             "        raise TypeError('llm_query prompt must be a string')\n"
             f"    if len(prompt.encode('utf-8')) > {config.max_submodel_prompt_bytes}:\n"
             "        raise ValueError('llm_query prompt exceeds configured limit')\n"
-            f"    return {external_name}(prompt)\n",
+            "    return prompt\n",
             mode="exec",
         )
         body = [*wrapper.body, *body]
@@ -221,7 +252,10 @@ def _prepare_sandbox_code(code: str, config: RLMConfig, *, token: str, external_
     error_name = f"__rlm_error_{token}"
     max_error_chars = max(1, min(4096, config.max_output_bytes // 4))
     handler = ast.ExceptHandler(
-        type=ast.Name(id="BaseException", ctx=ast.Load()),
+        # Monty uses a private BaseException-derived control signal while an
+        # external async function is suspended. Catching BaseException here
+        # consumes that signal and detaches the pending provider task.
+        type=ast.Name(id="Exception", ctx=ast.Load()),
         name=error_name,
         body=[
             ast.Raise(
