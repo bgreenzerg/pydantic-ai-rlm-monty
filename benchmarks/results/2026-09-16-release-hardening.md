@@ -28,3 +28,18 @@ path and 4.57 MB versus 1.95 MB for the no-tool path. RSS is sampled and noisy,
 so it is reported as supporting evidence rather than used as a pass/fail gate.
 The machine-readable local report remains under the ignored `benchmark-results/`
 directory.
+
+## Final live large-case verification
+
+Both deterministic large cases passed against OpenRouter model
+`openai/gpt-5.6-luna` with read-back from the local MLflow experiment
+`pydantic-ai-rlm-large-benchmark`:
+
+| Case | Time | Code calls | Nested calls | Peak worker RSS | MLflow trace |
+|---|---:|---:|---:|---:|---|
+| Customer feedback, 5,000 records | 61.931 s | 8 | 1/1 completed | 23.081 MB | `tr-da4d48119236ca3bfeb35b14e09c4caf` |
+| Accounting, 3,682 records | 56.573 s | 8 | 0 | 21.082 MB | `tr-59761fd16cea0d87cd4893fb16fc512c` |
+
+Both runs passed fixture-integrity, domain-quality, bounded-trajectory,
+credential-absence, trace-integrity and worker-cleanup checks. No Monty worker
+remained after either run.

@@ -46,8 +46,24 @@ upstream RLM prompt text remains byte-for-byte unchanged.
 The release gate covers unit, adversarial, concurrency and end-to-end agent
 tests; Ruff; mypy; Bandit; dependency audit; clean wheel/sdist installation; and
 both large synthetic OpenRouter workloads with local MLflow trace read-back.
-Exact commands and final results are filled in from the release branch before the
-pull request is merged.
+
+Final local results on 2026-09-16:
+
+- 82 tests passed; Ruff, mypy and ty on package source passed; Bandit reported no
+  high-severity package finding; and `pip-audit` reported no known dependency
+  vulnerability.
+- A clean Python 3.11 environment installed the 0.2.1 wheel, imported the bundled
+  OpenAI provider dependency and completed a Monty execution.
+- Customer feedback (5,000 records; 1,557,639 bytes) passed in 61.931 seconds
+  with eight code calls, one completed nested model call, complete trace read-back
+  and no remaining worker. MLflow trace:
+  `tr-da4d48119236ca3bfeb35b14e09c4caf`.
+- Accounting (3,682 records; 1,654,972 bytes) passed in 56.573 seconds with eight
+  code calls, correct answers to all five questions, complete trace read-back and
+  no remaining worker. MLflow trace: `tr-59761fd16cea0d87cd4893fb16fc512c`.
+- Both live reports verified fixture digests, bounded trajectories, domain truth,
+  worker cleanup, absence of the API key from outputs/traces and no terminal
+  agent/provider span.
 
 The clean-commit release-to-release performance gate passed 40 iterations with
 1 MiB context per run. Active sandbox p95 was effectively unchanged at +0.42%,
