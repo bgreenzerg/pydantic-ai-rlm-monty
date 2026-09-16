@@ -91,3 +91,16 @@ Q5: 12 cutoff exceptions total 4.8; corrected revenue 133.2, pretax profit 7.4, 
 Debit software revenue and credit deferred revenue. IDs: INV-CUT-2025-001, INV-CUT-2025-002, INV-CUT-2025-003.
 """
     assert accounting_domain_quality_error(answer, record_count=accounting_data.DATASET_SIZE) is None
+
+
+def test_accounting_quality_gate_accepts_latex_exception_count_format() -> None:
+    answer = r"""
+Q1: Gross margin was 40% and 35.2%, down 4.8 percentage points due to hardware component and freight costs.
+Q2: EBITDA was 18.1; restructuring 2.4 and settlement 1.2 produce normalized EBITDA 21.7 and margin 15.7%.
+Q3: CCC moved from 64.9 to 103.4 days, up 38.5, driven by receivables and inventory.
+Q4: CFO was 1.9, FCF was -8.6, liquidity 26.4, leverage 0.95, and headroom 44.5.
+Q5: \text{Exceptions}=12 and total 4.8; corrected revenue 133.2, pretax profit 7.4, deferred revenue 11.3.
+Dr Software revenue and Cr Deferred revenue. INV-CUT-2025-001, INV-CUT-2025-002, INV-CUT-2025-003.
+"""
+
+    assert accounting_domain_quality_error(answer, record_count=accounting_data.DATASET_SIZE) is None

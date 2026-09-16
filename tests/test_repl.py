@@ -129,20 +129,41 @@ def test_sync_llm_query_survives_sandbox_exception_wrapper() -> None:
 
 
 @pytest.mark.asyncio
-async def test_async_llm_query_survives_sandbox_exception_wrapper() -> None:
+@pytest.mark.parametrize("code", ["llm_query('bounded evidence')", "await llm_query('bounded evidence')"])
+async def test_async_llm_query_survives_sandbox_exception_wrapper(code: str) -> None:
     calls: list[str] = []
 
     async def fake_query(prompt: str) -> str:
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.02)
         calls.append(prompt)
         return "async-ok"
 
     async with AsyncREPLEnvironment("x", RLMConfig(sub_model="fake:model")) as repl:
         repl._llm_query = fake_query  # type: ignore[method-assign]
-        result = await repl.execute("await llm_query('bounded evidence')")
+        result = await repl.execute(code)
 
     assert result.success
     assert result.stdout == "'async-ok'\n"
+    assert calls == ["bounded evidence"]
+
+
+@pytest.mark.asyncio
+async def test_async_llm_query_failure_is_bounded_and_not_detached() -> None:
+    calls: list[str] = []
+
+    async def failing_query(prompt: str) -> str:
+        await asyncio.sleep(0.02)
+        calls.append(prompt)
+        raise RuntimeError("x" * 100_000)
+
+    config = RLMConfig(sub_model="fake:model", max_output_bytes=1024, truncate_output_chars=1024)
+    async with AsyncREPLEnvironment("x", config) as repl:
+        repl._llm_query = failing_query  # type: ignore[method-assign]
+        result = await repl.execute("llm_query('bounded evidence')")
+
+    assert not result.success
+    assert not result.fatal
+    assert len(result.stderr.encode("utf-8")) <= config.max_output_bytes
     assert calls == ["bounded evidence"]
 
 

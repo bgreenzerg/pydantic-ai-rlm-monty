@@ -76,6 +76,7 @@ def accounting_domain_quality_error(answer: str, *, record_count: int) -> str | 
     twelve_exceptions = re.search(r"\b12(?:\s+[a-z-]+){0,3}\s+(?:contracts|invoices|entries|exceptions)\b", text) or re.search(
         r"\b(?:number|count)\s+of\s+(?:contracts|invoices|entries|exceptions)\s*[:=]\s*12\b", text
     )
+    twelve_exceptions = twelve_exceptions or re.search(r"\b(?:contracts|invoices|entries|exceptions)\s*[:=]\s*12\b", text)
     if twelve_exceptions is None:
         return "Q5 does not identify exactly 12 cutoff exceptions"
     valid_ids = {cutoff_invoice_id(index).lower() for index in range(1, 13)}

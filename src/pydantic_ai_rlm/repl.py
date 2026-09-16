@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from pydantic_ai import ModelRequest
 from pydantic_ai.direct import model_request, model_request_sync
@@ -166,15 +166,18 @@ def _validate_code(code: str, config: RLMConfig) -> str:
 class _LLMQueryTransformer(ast.NodeTransformer):
     """Keep external calls direct while validating their argument in Monty."""
 
-    def __init__(self, *, external_name: str, validator_name: str) -> None:
+    def __init__(self, *, external_name: str, validator_name: str, await_external: bool) -> None:
         self._external_name = external_name
         self._validator_name = validator_name
+        self._await_external = await_external
 
-    def visit_Call(self, node: ast.Call) -> ast.AST:
-        if not (isinstance(node.func, ast.Name) and node.func.id == "llm_query"):
-            return self.generic_visit(node)
+    @staticmethod
+    def _is_llm_query(node: ast.AST) -> bool:
+        return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "llm_query"
+
+    def _rewrite_call(self, node: ast.Call) -> ast.expr:
         if len(node.args) != 1 or node.keywords:
-            return self.generic_visit(node)
+            return cast(ast.expr, self.generic_visit(node))
         prompt = self.visit(node.args[0])
         validated_prompt = ast.Call(
             func=ast.Name(id=self._validator_name, ctx=ast.Load()),
@@ -191,7 +194,29 @@ class _LLMQueryTransformer(ast.NodeTransformer):
         )
 
 
-def _prepare_sandbox_code(code: str, config: RLMConfig, *, token: str, external_name: str | None) -> str:
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        if not self._is_llm_query(node):
+            return self.generic_visit(node)
+        rewritten = self._rewrite_call(node)
+        if self._await_external and isinstance(rewritten, ast.Call):
+            return ast.copy_location(ast.Await(value=rewritten), node)
+        return rewritten
+
+    def visit_Await(self, node: ast.Await) -> ast.AST:
+        if self._is_llm_query(node.value):
+            rewritten = self._rewrite_call(cast(ast.Call, node.value))
+            return ast.copy_location(ast.Await(value=rewritten), node)
+        return self.generic_visit(node)
+
+
+def _prepare_sandbox_code(
+    code: str,
+    config: RLMConfig,
+    *,
+    token: str,
+    external_name: str | None,
+    await_external: bool,
+) -> str:
     """Parse and wrap model code so no unbounded value or exception crosses IPC."""
     normalized = _validate_code(code, config)
     tree = ast.parse(normalized, mode="exec")
@@ -199,7 +224,11 @@ def _prepare_sandbox_code(code: str, config: RLMConfig, *, token: str, external_
 
     if external_name is not None:
         validator_name = f"__rlm_validate_prompt_{token}"
-        tree = _LLMQueryTransformer(external_name=external_name, validator_name=validator_name).visit(tree)
+        tree = _LLMQueryTransformer(
+            external_name=external_name,
+            validator_name=validator_name,
+            await_external=await_external,
+        ).visit(tree)
         body = list(tree.body)
         wrapper = ast.parse(
             f"def {validator_name}(prompt):\n"
@@ -520,6 +549,7 @@ class REPLEnvironment:
                 self.config,
                 token=self._internal_token,
                 external_name=self._external_name,
+                await_external=False,
             )
         except SyntaxError as exc:
             return REPLResult(
@@ -700,6 +730,7 @@ class AsyncREPLEnvironment:
                 self.config,
                 token=self._internal_token,
                 external_name=self._external_name,
+                await_external=True,
             )
         except SyntaxError as exc:
             return REPLResult(
