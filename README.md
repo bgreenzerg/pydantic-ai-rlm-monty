@@ -1,4 +1,4 @@
-<h1 align="center">Pydantic AI RLM</h1>
+<h1 align="center">Pydantic AI RLM Monty</h1>
 
 <p align="center">
   <b>Handle Extremely Large Contexts with Any LLM Provider</b>
@@ -14,7 +14,7 @@
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <a href="https://github.com/pydantic/pydantic-ai"><img src="https://img.shields.io/badge/Powered%20by-Pydantic%20AI-E92063?logo=pydantic&logoColor=white" alt="Pydantic AI"></a>
-  <a href="https://pypi.org/project/pydantic-ai-rlm/"><img src="https://img.shields.io/pypi/v/pydantic-ai-rlm.svg" alt="PyPI version"></a>
+  <a href="https://github.com/bgreenzerg/pydantic-ai-rlm-monty/releases"><img src="https://img.shields.io/github/v/release/bgreenzerg/pydantic-ai-rlm-monty" alt="GitHub release"></a>
 </p>
 
 <p align="center">
@@ -49,7 +49,7 @@ This library is an implementation inspired by the [original minimal implementati
 ## Get Started in 60 Seconds
 
 ```bash
-python -m pip install .
+python -m pip install https://github.com/bgreenzerg/pydantic-ai-rlm-monty/releases/download/v0.2.2/pydantic_ai_rlm_monty-0.2.2-py3-none-any.whl
 ```
 
 ```python
@@ -71,7 +71,7 @@ answer = await run_rlm_analysis(
 
 ---
 
-## Why pydantic-ai-rlm?
+## Why pydantic-ai-rlm-monty?
 
 ### Switch Providers Instantly
 
@@ -106,7 +106,7 @@ agent = Agent("openai:gpt-5", toolsets=[toolset])
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         pydantic-ai-rlm                         │
+│                     pydantic-ai-rlm-monty                      │
 │                                                                 │
 │   ┌─────────────┐         ┌─────────────────────────────────┐   │
 │   │   Main LLM  │         │     Sandboxed REPL Environment  │   │

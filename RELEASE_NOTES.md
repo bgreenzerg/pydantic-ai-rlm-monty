@@ -1,5 +1,13 @@
 # Release notes
 
+## 0.2.2 — corrected distribution identity
+
+Version 0.2.2 changes the Python distribution name from the upstream-owned
+`pydantic-ai-rlm` name to this fork's distinct `pydantic-ai-rlm-monty` name.
+The import package deliberately remains `pydantic_ai_rlm`, so existing Python
+imports and application code stay compatible. No sandbox or prompt behavior is
+changed from 0.2.1.
+
 ## 0.2.1 — release hardening
 
 Version 0.2.1 closes the nine P1 findings from the package release review. The

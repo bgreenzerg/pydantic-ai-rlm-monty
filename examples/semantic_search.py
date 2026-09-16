@@ -1,5 +1,5 @@
 """
-Semantic Search example using pydantic-ai-rlm.
+Semantic Search example using pydantic-ai-rlm-monty.
 
 This example demonstrates finding information that requires semantic understanding
 rather than simple pattern matching. The RLM approach uses sub-LLM queries to

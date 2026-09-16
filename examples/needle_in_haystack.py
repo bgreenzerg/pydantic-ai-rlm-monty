@@ -1,5 +1,5 @@
 """
-Needle in Haystack example using pydantic-ai-rlm.
+Needle in Haystack example using pydantic-ai-rlm-monty.
 
 This example demonstrates finding a specific pattern (magic number) hidden
 in a massive text context. The RLM approach uses code execution to efficiently

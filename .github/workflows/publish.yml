@@ -49,6 +49,33 @@ jobs:
       - name: Build wheel and source distribution
         run: uv build
 
+      - name: Verify distribution identity
+        shell: python
+        run: |
+          import email.parser
+          import pathlib
+          import tomllib
+          import zipfile
+
+          expected_name = "pydantic-ai-rlm-monty"
+          expected_version = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+          filename_stem = f"pydantic_ai_rlm_monty-{expected_version}"
+          wheels = list(pathlib.Path("dist").glob("*.whl"))
+          sdists = list(pathlib.Path("dist").glob("*.tar.gz"))
+          if len(wheels) != 1 or wheels[0].name != f"{filename_stem}-py3-none-any.whl":
+              raise SystemExit(f"Unexpected wheel output: {wheels}")
+          if len(sdists) != 1 or sdists[0].name != f"{filename_stem}.tar.gz":
+              raise SystemExit(f"Unexpected source distribution output: {sdists}")
+          with zipfile.ZipFile(wheels[0]) as archive:
+              metadata_paths = [name for name in archive.namelist() if name.endswith(".dist-info/METADATA")]
+              if len(metadata_paths) != 1:
+                  raise SystemExit(f"Unexpected wheel metadata entries: {metadata_paths}")
+              metadata = email.parser.BytesParser().parsebytes(archive.read(metadata_paths[0]))
+          if metadata["Name"] != expected_name or metadata["Version"] != expected_version:
+              raise SystemExit(
+                  f"Unexpected distribution metadata: Name={metadata['Name']!r}, Version={metadata['Version']!r}"
+              )
+
       - name: Generate SHA-256 checksums
         run: sha256sum dist/* > SHA256SUMS
 
@@ -60,5 +87,5 @@ jobs:
             dist/* \
             SHA256SUMS \
             --verify-tag \
-            --title "pydantic-ai-rlm ${GITHUB_REF_NAME#v}" \
+            --title "pydantic-ai-rlm-monty ${GITHUB_REF_NAME#v}" \
             --notes-file RELEASE_NOTES.md
