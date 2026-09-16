@@ -259,6 +259,7 @@ async def test_cancelled_execution_can_be_closed_without_leaking_worker() -> Non
 
 @pytest.mark.asyncio
 async def test_cancelled_startup_releases_capacity(monkeypatch: pytest.MonkeyPatch) -> None:
+    entered = asyncio.Event()
     closed = asyncio.Event()
 
     class SlowPool:
@@ -266,6 +267,7 @@ async def test_cancelled_startup_releases_capacity(monkeypatch: pytest.MonkeyPat
             del kwargs
 
         async def __aenter__(self) -> SlowPool:
+            entered.set()
             await asyncio.sleep(60)
             return self
 
@@ -276,7 +278,7 @@ async def test_cancelled_startup_releases_capacity(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr("pydantic_ai_rlm.repl.AsyncMonty", SlowPool)
     repl = AsyncREPLEnvironment("startup-secret", RLMConfig(code_timeout=5))
     task = asyncio.create_task(repl.open())
-    await asyncio.sleep(0.02)
+    await asyncio.wait_for(entered.wait(), timeout=1)
     task.cancel()
 
     with pytest.raises(asyncio.CancelledError):
