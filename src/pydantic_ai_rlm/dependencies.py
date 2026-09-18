@@ -223,7 +223,19 @@ class RLMDependencies:
         self.context = self.config.context_for_monty(self.context)
 
 
-def _validate_context_value(value: Any, *, max_depth: int, max_items: int) -> None:  # noqa: C901
+def _context_children(value: Any, path: str, depth: int) -> Iterator[tuple[Any, str, int]]:
+    """Bind each traversal frame independently, including its path and depth."""
+    if type(value) is list:
+        for index, child in enumerate(value):
+            yield child, f"{path}[{index}]", depth + 1
+    else:
+        for key, child in value.items():
+            if type(key) is not str:
+                raise TypeError(f"{path} keys must be strings")
+            yield child, f"{path}.{key}", depth + 1
+
+
+def _validate_context_value(value: Any, *, max_depth: int, max_items: int) -> None:
     """Iteratively validate a JSON tree without risking host recursion."""
     stack: list[Iterator[tuple[Any, str, int]]] = [iter(((value, "context", 0),))]
     seen_containers: set[int] = set()
@@ -252,13 +264,7 @@ def _validate_context_value(value: Any, *, max_depth: int, max_items: int) -> No
         if identity in seen_containers:
             raise ValueError(f"{path} contains a cyclic or shared container")
         seen_containers.add(identity)
-        if item_type is list:
-            stack.append(((child, f"{path}[{index}]", depth + 1) for index, child in enumerate(item)))
-        else:
-            for key in item:
-                if type(key) is not str:
-                    raise TypeError(f"{path} keys must be strings")
-            stack.append((item[key], f"{path}.{key}", depth + 1) for key in item)
+        stack.append(_context_children(item, path, depth))
 
 
 def _bounded_json(context: dict[str, Any] | list[Any], config: RLMConfig) -> tuple[str, int]:

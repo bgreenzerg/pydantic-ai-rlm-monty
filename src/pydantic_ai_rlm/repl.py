@@ -35,9 +35,20 @@ from pydantic_monty import (
 
 from .dependencies import ContextType, RLMConfig
 
+
 # A process-wide defence-in-depth ceiling. Each sandbox can consume up to the
 # configured memory budget, so unbounded pool creation is not acceptable.
-_SANDBOX_GATE = threading.BoundedSemaphore(4)
+def _sandbox_capacity_from_env() -> int:
+    """Read process capacity once at import; never replace a live semaphore."""
+    raw = os.environ.get("PYDANTIC_AI_RLM_MAX_SESSIONS", "4")
+    if not raw.isascii() or not raw.isdecimal():
+        raise ValueError("PYDANTIC_AI_RLM_MAX_SESSIONS must be an integer between 1 and 1024")
+    if len(raw) > 4 or not 1 <= int(raw) <= 1024:
+        raise ValueError("PYDANTIC_AI_RLM_MAX_SESSIONS must be an integer between 1 and 1024")
+    return int(raw)
+
+
+_SANDBOX_GATE = threading.BoundedSemaphore(_sandbox_capacity_from_env())
 
 
 @dataclass

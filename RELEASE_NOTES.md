@@ -1,5 +1,15 @@
 # Release notes
 
+## 0.2.3 — configurable concurrency and structured-context fixes
+
+- Configure per-process Monty concurrency using `PYDANTIC_AI_RLM_MAX_SESSIONS`
+  before import (default 4; allowed 1–1024). Both synchronous and asynchronous
+  sandboxes share this capacity. Restart to change it safely.
+- Fix lazy structured-context traversal capturing mutable loop variables.
+  Multi-key dictionaries now validate correctly; sibling list/dictionary paths
+  and depths remain independent, preserving depth and type checks.
+- Document admission timeouts, queue behavior and memory budgeting.
+
 ## 0.2.2 — corrected distribution identity
 
 Version 0.2.2 changes the Python distribution name from the upstream-owned

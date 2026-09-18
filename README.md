@@ -36,6 +36,35 @@
 > upstream RLM instructions are byte-for-byte unchanged. See [SECURITY.md](SECURITY.md)
 > before operating on regulated or confidential data.
 
+## Concurrent Monty sessions
+
+Set `PYDANTIC_AI_RLM_MAX_SESSIONS` before starting Python to configure the maximum
+active sandbox sessions **per Python process** (default `4`, range `1`–`1024`):
+
+```powershell
+$env:PYDANTIC_AI_RLM_MAX_SESSIONS = "32"
+python your_service.py
+```
+
+Linux/macOS: `PYDANTIC_AI_RLM_MAX_SESSIONS=32 python your_service.py`.
+The value is read once on package import; restart processes to change it.
+Invalid values raise `ValueError`. This is not a per-request `RLMConfig` option:
+all threads and async runs share the limit. Each application process has its own.
+
+Independent `agent.run()` calls can run concurrently using separate
+`RLMDependencies` per request. Code calls within each run remain sequential.
+A slot is acquired on the first code call and held until the run ends, including
+model waits. Admission waits up to `RLMConfig(checkout_timeout=10)` seconds by
+default (maximum 300), then raises `TimeoutError`. Waiting requests are not
+bounded or guaranteed FIFO and are not automatically retried. Use a bounded
+application queue to handle bursts.
+
+Capacity is not a memory reservation: each sandbox has its own memory allowance
+(256 MiB by default), with host context storage and worker overhead additional.
+Size capacity against actual workloads and the number of application processes.
+Run `python benchmarks/compare_parallel_capacity.py` for the four-versus-32
+comparison with real Monty workers and simulated model wait time.
+
 ## What is RLM?
 
 **RLM (Recursive Language Model)** is a pattern for handling contexts that exceed a model's context window, introduced by **Alex L. Zhang, Tim Kraska, and Omar Khattab** in their paper [Recursive Language Models](https://arxiv.org/abs/2512.24601). Instead of trying to fit everything into one prompt, the LLM writes Python code to programmatically explore and analyze the data.
@@ -49,7 +78,7 @@ This library is an implementation inspired by the [original minimal implementati
 ## Get Started in 60 Seconds
 
 ```bash
-python -m pip install https://github.com/bgreenzerg/pydantic-ai-rlm-monty/releases/download/v0.2.2/pydantic_ai_rlm_monty-0.2.2-py3-none-any.whl
+python -m pip install https://github.com/bgreenzerg/pydantic-ai-rlm-monty/releases/download/v0.2.3/pydantic_ai_rlm_monty-0.2.3-py3-none-any.whl
 ```
 
 ```python
