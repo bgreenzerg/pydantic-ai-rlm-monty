@@ -58,9 +58,11 @@ files and container or VM isolation appropriate to its threat model.
 - Tool calls within a run are sequential. A new worker is created lazily on the
   first code call, and `__aexit__` performs deterministic cleanup even when a
   request is cancelled. Runs without code calls consume no worker capacity.
-- The process-wide worker ceiling is four, limiting worst-case native worker
-  memory. Scale out with service processes after capacity testing instead of
-  increasing untrusted-code concurrency casually.
+- The process-wide worker ceiling defaults to four. Set
+  `PYDANTIC_AI_RLM_MAX_SESSIONS` before import to select 1–1024 slots.
+  All threads share the ceiling; each application process has its own ceiling.
+  Admission times out after `checkout_timeout`; pending request memory is not
+  bounded by this ceiling. Size capacity using workload and memory measurements.
 - Code, prompts and outputs are redacted from package logs unless
   `include_content=True` is deliberately selected.
 - The executable is resolved from an explicit absolute path or the installed

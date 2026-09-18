@@ -1502,7 +1502,7 @@ wheels = [
 
 [[package]]
 name = "pydantic-ai-rlm-monty"
-version = "0.2.2"
+version = "0.2.3"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic-ai-slim", extra = ["openai"] },
